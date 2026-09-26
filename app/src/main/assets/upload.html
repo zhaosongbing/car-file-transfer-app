@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>发送到车机</title>
+<style>
+  :root{
+    --blue:#0064E0; --white:#fff; --surface:#F1F4F7; --border:#DDE2E8;
+    --ink:#0A1317; --gray:#5D6C7B; --red:#E41E3F; --green:#31A24C;
+    --amber:#F2A918; --purple:#A121CE; --blue-bg:#E6F3FF;
+    --r-card:24px; --r-sm:16px; --r-pill:9999px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+       background:var(--surface);color:var(--ink);-webkit-font-smoothing:antialiased;padding-bottom:24px}
+  .wrap{max-width:430px;margin:0 auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+  .head .t{font-size:22px;font-weight:700}
+  .head .s{font-size:13px;color:var(--gray);margin-top:2px}
+  .conn{background:#fff;border-radius:var(--r-card);padding:16px;display:flex;flex-direction:column;gap:8px}
+  .conn .ch{display:flex;align-items:center;gap:10px}
+  .conn .ch .ci{width:22px;height:22px;color:var(--green)}
+  .conn .ch .ct{font-size:15px;font-weight:600}
+  .conn .cs{font-size:12px;color:var(--gray)}
+  .pick{display:flex;align-items:center;gap:8px;padding:12px 16px;border-radius:12px;
+        background:var(--blue-bg);color:var(--blue);font-size:14px;font-weight:500;cursor:pointer}
+  .sec{display:flex;align-items:center;justify-content:space-between}
+  .sec .st{font-size:15px;font-weight:600}
+  .sec .sa{font-size:13px;font-weight:500;color:var(--blue);cursor:pointer}
+  .row{display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border-radius:var(--r-sm)}
+  .tb{width:46px;height:46px;border-radius:12px;flex:none;display:flex;align-items:center;
+      justify-content:center;color:#fff;font-weight:700;font-size:12px}
+  .row .pi{flex:1;min-width:0}
+  .row .pin{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .pis{font-size:12px;color:var(--gray);margin-top:2px}
+  .chk{width:22px;height:22px;border-radius:6px;border:2px solid var(--border);flex:none;
+       display:flex;align-items:center;justify-content:center;color:#fff}
+  .chk.on{background:var(--blue);border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:#fff;padding:12px 20px 20px;
+       display:flex;align-items:center;justify-content:space-between;box-shadow:0 -2px 12px rgba(10,19,23,.06)}
+  .bar .bi{font-size:13px;font-weight:500}
+  .btn{padding:12px 28px;border-radius:var(--r-pill);border:none;background:var(--blue);
+       color:#fff;font-size:15px;font-weight:700}
+  .btn:disabled{background:var(--border);color:var(--gray)}
+  .btn.ghost{background:#fff;border:1px solid var(--gray);color:var(--gray)}
+  .prog-card{background:#fff;border-radius:var(--r-card);padding:18px 16px;display:flex;flex-direction:column;gap:12px}
+  .prog-card .top{display:flex;align-items:baseline;justify-content:space-between}
+  .prog-card .pct{font-size:22px;font-weight:700;color:var(--blue)}
+  .prog-card .pnm{font-size:14px;font-weight:500;color:var(--ink);max-width:60%;
+                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .track{width:100%;height:8px;border-radius:var(--r-pill);background:var(--blue-bg);overflow:hidden}
+  .fill{height:100%;width:0%;background:var(--blue);border-radius:var(--r-pill);transition:width .2s}
+  .rate{font-size:12px;color:var(--gray)}
+  .qs{font-size:12px;font-weight:500}
+  .qs.sending{color:var(--blue)} .qs.done{color:var(--green)} .qs.wait{color:var(--gray)} .qs.err{color:var(--red)}
+  .ok-card{background:#fff;border-radius:var(--r-card);padding:24px 16px;display:flex;
+           flex-direction:column;align-items:center;gap:10px}
+  .ok-check{width:44px;height:44px;border-radius:50%;background:var(--green);display:flex;
+            align-items:center;justify-content:center;color:#fff}
+  .ok-card .ot{font-size:22px;font-weight:700}
+  .ok-card .os{font-size:13px;color:var(--gray)}
+  .recv{background:var(--blue-bg);border-radius:var(--r-sm);padding:14px 16px;text-align:center;
+        color:var(--blue);font-size:13px;font-weight:500}
+  .empty{padding:36px 0;text-align:center;color:var(--gray);font-size:14px}
+  .hidden{display:none !important}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+
+<div class="wrap" id="viewSelect">
+  <div class="head"><div class="t">文件互传</div><div class="s">扫码连接 · 发送文件</div></div>
+  <div class="conn">
+    <div class="ch">
+      <svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12a9 9 0 0 1 14 0"/><circle cx="12" cy="18" r="1.4" fill="currentColor" stroke="none"/></svg>
+      <div class="ct">已连接到 <span id="devName">车机</span></div>
+    </div>
+    <div class="cs">局域网直连 · 浏览器扫码即传</div>
+  </div>
+  <label class="pick">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    选择文件
+    <input type="file" id="fileInput" multiple />
+  </label>
+  <div class="sec"><div class="st">选择要发送的文件</div><div class="sa" id="toggleAll" style="display:none">全选</div></div>
+  <div id="fileList"></div>
+  <div class="empty" id="emptyTip">还没有选择文件<br/>点击上方「选择文件」从手机中挑选</div>
+</div>
+
+<div class="wrap hidden" id="viewSending">
+  <div class="head"><div class="t">文件互传</div><div class="s">正在发送 · 向 <span class="devSpan">车机</span></div></div>
+  <div class="prog-card">
+    <div class="top"><div class="pct" id="pctText">0%</div><div class="pnm" id="curName">准备中…</div></div>
+    <div class="track"><div class="fill" id="fillBar"></div></div>
+    <div class="rate" id="rateText">正在建立连接…</div>
+  </div>
+  <div class="sec"><div class="st">发送队列</div><div class="sa" id="queueCount">0 项</div></div>
+  <div id="queueList"></div>
+  <div style="height:64px"></div>
+</div>
+
+<div class="wrap hidden" id="viewDone">
+  <div class="head"><div class="t">文件互传</div><div class="s">发送完成</div></div>
+  <div class="ok-card">
+    <div class="ok-check"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="5 13 10 18 19 6"/></svg></div>
+    <div class="ot">发送完成</div>
+    <div class="os" id="doneSummary">—</div>
+  </div>
+  <div class="recv" id="doneRecv">已成功发送至 车机</div>
+  <div class="sec"><div class="st">本次发送</div><div class="sa" id="doneCount">0 项</div></div>
+  <div id="doneList"></div>
+  <div style="height:64px"></div>
+</div>
+
+<div class="bar" id="bottomBar">
+  <div class="bi" id="selInfo">已选 0 项 · 0 B</div>
+  <button class="btn" id="sendBtn" disabled>发送</button>
+</div>
+
+<script>
+(function(){
+  var TYPE = {apk:'APK',zip:'ZIP',rar:'ZIP','7z':'ZIP',pdf:'PDF',png:'PNG',jpg:'PNG',jpeg:'PNG',gif:'PNG',webp:'PNG',
+              mp4:'MP4',mkv:'MP4',avi:'MP4',mov:'MP4',doc:'DOC',docx:'DOC',txt:'DOC'};
+  var COLOR = {APK:'var(--blue)',ZIP:'var(--amber)',PDF:'var(--red)',PNG:'var(--green)',MP4:'var(--purple)',DOC:'var(--gray)',FILE:'var(--gray)'};
+
+  var files = [];          // {file, on, name, size}
+  var sending = false;
+
+  var $ = function(id){ return document.getElementById(id); };
+
+  function typeOf(n){
+    var i = n.lastIndexOf('.');
+    var e = (i>=0 ? n.substring(i+1) : '').toLowerCase();
+    return TYPE[e] || 'FILE';
+  }
+  function fmt(b){
+    if(b < 1024) return b + ' B';
+    if(b < 1048576) return (b/1024).toFixed(1) + ' KB';
+    if(b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+    return (b/1073741824).toFixed(2) + ' GB';
+  }
+
+  // device name from the server
+  fetch('info').then(function(r){return r.json();}).then(function(d){
+    if(d && d.device){
+      $('devName').textContent = d.device;
+      var spans = document.querySelectorAll('.devSpan');
+      for(var i=0;i<spans.length;i++) spans[i].textContent = d.device;
+      $('doneRecv').textContent = '已成功发送至 ' + d.device;
+    }
+  }).catch(function(){});
+
+  $('fileInput').addEventListener('change', function(e){
+    var picked = Array.prototype.slice.call(e.target.files || []);
+    picked.forEach(function(f){
+      // avoid duplicates by name+size
+      var dup = files.some(function(x){ return x.name===f.name && x.size===f.size; });
+      if(!dup) files.push({file:f, on:true, name:f.name, size:f.size});
+    });
+    e.target.value = '';
+    render();
+  });
+
+  $('toggleAll').addEventListener('click', function(){
+    var allOn = files.length>0 && files.every(function(f){return f.on;});
+    files.forEach(function(f){ f.on = !allOn; });
+    render();
+  });
+
+  function render(){
+    var list = $('fileList');
+    list.innerHTML = '';
+    files.forEach(function(f, idx){
+      var t = typeOf(f.name);
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML =
+        '<div class="tb" style="background:'+COLOR[t]+'">'+t+'</div>' +
+        '<div class="pi"><div class="pin">'+escapeHtml(f.name)+'</div><div class="pis">'+fmt(f.size)+'</div></div>' +
+        '<div class="chk'+(f.on?' on':'')+'">'+(f.on?'✓':'')+'</div>';
+      row.addEventListener('click', function(){
+        if(sending) return;
+        f.on = !f.on; render();
+      });
+      list.appendChild(row);
+    });
+    $('emptyTip').style.display = files.length ? 'none' : 'block';
+    $('toggleAll').style.display = files.length ? 'block' : 'none';
+
+    var sel = files.filter(function(f){return f.on;});
+    var total = sel.reduce(function(a,f){return a+f.size;},0);
+    $('selInfo').textContent = '已选 ' + sel.length + ' 项 · ' + fmt(total);
+    $('sendBtn').disabled = (sel.length===0 || sending);
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"]/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+    });
+  }
+
+  function renderQueue(){
+    var list = $('queueList');
+    list.innerHTML = '';
+    files.forEach(function(f){
+      if(!f.on) return;
+      var t = typeOf(f.name);
+      var st = f.state || 'wait';
+      var label = {wait:'等待中',sending:'发送中',done:'已完成',err:'失败'}[st];
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML =
+        '<div class="tb" style="background:'+COLOR[t]+'">'+t+'</div>' +
+        '<div class="pi"><div class="pin">'+escapeHtml(f.name)+'</div><div class="pis">'+fmt(f.size)+'</div></div>' +
+        '<div class="qs '+st+'">'+label+'</div>';
+      list.appendChild(row);
+    });
+    var sel = files.filter(function(f){return f.on;});
+    $('queueCount').textContent = sel.length + ' 项';
+  }
+
+  $('sendBtn').addEventListener('click', function(){
+    var sel = files.filter(function(f){return f.on;});
+    if(!sel.length || sending) return;
+    sending = true;
+    sel.forEach(function(f){ f.state = 'wait'; });
+    $('viewSelect').classList.add('hidden');
+    $('viewSending').classList.remove('hidden');
+    $('bottomBar').classList.add('hidden');
+    renderQueue();
+    sendNext(0);
+  });
+
+  function sendNext(i){
+    var sel = files.filter(function(f){return f.on;});
+    if(i >= sel.length){ finish(); return; }
+    var f = sel[i];
+    f.state = 'sending';
+    renderQueue();
+    $('curName').textContent = f.name;
+
+    var xhr = new XMLHttpRequest();
+    var started = Date.now();
+    xhr.open('POST', 'upload?name=' + encodeURIComponent(f.name), true);
+    xhr.upload.onprogress = function(ev){
+      if(!ev.lengthComputable) return;
+      var doneBytes = bytesDoneBefore(sel, i) + ev.loaded;
+      var totalBytes = sel.reduce(function(a,x){return a+x.size;},0);
+      var pct = totalBytes ? Math.round(doneBytes*100/totalBytes) : 0;
+      $('fillBar').style.width = pct + '%';
+      $('pctText').textContent = pct + '%';
+      var secs = (Date.now()-started)/1000;
+      if(secs > 0.3){
+        var speed = ev.loaded/1048576/secs;
+        $('rateText').textContent = '约 ' + speed.toFixed(1) + ' MB/s';
+      }
+    };
+    xhr.onload = function(){
+      if(xhr.status >= 200 && xhr.status < 300){
+        f.state = 'done'; renderQueue(); sendNext(i+1);
+      } else {
+        f.state = 'err'; renderQueue(); sendNext(i+1);
+      }
+    };
+    xhr.onerror = function(){
+      f.state = 'err'; renderQueue(); sendNext(i+1);
+    };
+    xhr.send(f.file);
+  }
+
+  function bytesDoneBefore(sel, i){
+    var b = 0;
+    for(var k=0;k<i;k++) b += sel[k].size;
+    return b;
+  }
+
+  function finish(){
+    sending = false;
+    var sel = files.filter(function(f){return f.on;});
+    var okCount = sel.filter(function(f){return f.state==='done';}).length;
+    var total = sel.reduce(function(a,f){return a+(f.state==='done'?f.size:0);},0);
+    var secs = Math.max(1, Math.round((Date.now()-(window.__t0||Date.now()))/1000));
+
+    $('fillBar').style.width = '100%';
+    $('pctText').textContent = '100%';
+
+    $('viewSending').classList.add('hidden');
+    $('viewDone').classList.remove('hidden');
+    $('doneSummary').textContent = okCount + ' 个文件 · ' + fmt(total) + ' · 已送达';
+    $('doneCount').textContent = sel.length + ' 项';
+
+    var list = $('doneList');
+    list.innerHTML = '';
+    sel.forEach(function(f){
+      var t = typeOf(f.name);
+      var ok = f.state==='done';
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML =
+        '<div class="tb" style="background:'+COLOR[t]+'">'+t+'</div>' +
+        '<div class="pi"><div class="pin">'+escapeHtml(f.name)+'</div><div class="pis">'+fmt(f.size)+'</div></div>' +
+        (ok ? '<div class="qs done">已完成</div>' : '<div class="qs err">失败</div>');
+      list.appendChild(row);
+    });
+
+    // reset the picker so another batch can be sent
+    files = files.filter(function(f){return !f.on;});
+    var bar = $('bottomBar');
+    bar.classList.remove('hidden');
+    bar.innerHTML = '<div class="bi">可以再次选择文件发送</div>' +
+                    '<button class="btn" onclick="location.reload()">继续发送</button>';
+  }
+
+  window.__t0 = Date.now();
+  render();
+})();
+</script>
+</body>
+</html>
