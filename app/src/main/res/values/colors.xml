@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MIUIX launcher icon plate / brand blue -->
+    <color name="miuix_brand">#FF0F7FFF</color>
+    <color name="miuix_brand_dark">#FF0B63CC</color>
+</resources>
