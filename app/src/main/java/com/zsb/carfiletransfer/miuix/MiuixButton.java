@@ -1,6 +1,7 @@
 package com.zsb.carfiletransfer.miuix;
 
 import android.content.Context;
+import android.graphics.drawable.StateListDrawable;
 import android.view.Gravity;
 import android.widget.FrameLayout;
 
@@ -38,6 +39,16 @@ public class MiuixButton extends FrameLayout {
     private final Color color;
     private boolean filled = true;
 
+    // design-spec overrides (0 / null means "keep the MIUIX token")
+    private float radiusOverrideDp = -1f;
+    private float padHDp = -1f;
+    private float padVDp = -1f;
+    private float labelSizeSp = -1f;
+    private int containerOverride = 0;
+    private int contentOverride = 0;
+    private boolean outlined = false;
+    private int outlineColor = 0;
+
     public MiuixButton(Context c, CharSequence text) {
         this(c, text, Size.MEDIUM, Color.PRIMARY);
     }
@@ -70,6 +81,52 @@ public class MiuixButton extends FrameLayout {
     /** Filled button (default) or a tinted, low-emphasis button. */
     public MiuixButton setFilled(boolean filled) {
         this.filled = filled;
+        applyStyle();
+        return this;
+    }
+
+    /** Pill / custom corner radius from the design spec. */
+    public MiuixButton setRadiusDp(float radiusDp) {
+        radiusOverrideDp = radiusDp;
+        applyStyle();
+        return this;
+    }
+
+    /** Explicit horizontal / vertical inner padding, in dp. */
+    public MiuixButton setPaddingDp(float horizontalDp, float verticalDp) {
+        padHDp = horizontalDp;
+        padVDp = verticalDp;
+        setPadding(MiuixTheme.dp(getContext(), horizontalDp),
+                MiuixTheme.dp(getContext(), verticalDp),
+                MiuixTheme.dp(getContext(), horizontalDp),
+                MiuixTheme.dp(getContext(), verticalDp));
+        return this;
+    }
+
+    /** Explicit label size, in sp. */
+    public MiuixButton setLabelSizeSp(float sp) {
+        labelSizeSp = sp;
+        label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp);
+        return this;
+    }
+
+    public MiuixButton setLabelWeight(int weight) {
+        label.setWeight(weight);
+        return this;
+    }
+
+    /** Outlined (bordered) treatment instead of a filled surface. */
+    public MiuixButton setOutlined(boolean outlined, int strokeColor) {
+        this.outlined = outlined;
+        this.outlineColor = strokeColor;
+        applyStyle();
+        return this;
+    }
+
+    /** Force the container / content colours (used for the design spec's chip set). */
+    public MiuixButton setColors(int container, int content) {
+        containerOverride = container;
+        contentOverride = content;
         applyStyle();
         return this;
     }
@@ -112,11 +169,27 @@ public class MiuixButton extends FrameLayout {
 
     private void applyStyle() {
         MiuixTheme.MiuixColorScheme s = MiuixTheme.colors();
-        int radius = MiuixTheme.dp(getContext(), size.radiusDp);
-        int normal = containerColor();
+        int radius = MiuixTheme.dp(getContext(),
+                radiusOverrideDp >= 0 ? radiusOverrideDp : size.radiusDp);
+        int normal = containerOverride != 0 ? containerOverride : containerColor();
         int pressed = MiuixTheme.darken(normal, 0.12f);
         int disabled = color == Color.NEUTRAL ? s.surfaceContainer : s.disabledContainer;
-        setBackground(MiuixTheme.pressable(normal, pressed, disabled, radius));
-        label.setTextColor(contentColor());
+        if (outlined) {
+            int stroke = outlineColor != 0 ? outlineColor : normal;
+            int sw = Math.max(1, MiuixTheme.dp(getContext(), 1f));
+            StateListDrawable sld = new StateListDrawable();
+            sld.addState(new int[]{-android.R.attr.state_enabled},
+                    MiuixTheme.outlined(s.disabledContainer, s.outline, radius, sw));
+            sld.addState(new int[]{android.R.attr.state_pressed},
+                    MiuixTheme.outlined(normal, stroke, radius, sw));
+            sld.addState(new int[]{android.R.attr.state_focused},
+                    MiuixTheme.outlined(normal, stroke, radius, sw));
+            sld.addState(new int[]{},
+                    MiuixTheme.outlined(0x00000000, stroke, radius, sw));
+            setBackground(sld);
+        } else {
+            setBackground(MiuixTheme.pressable(normal, pressed, disabled, radius));
+        }
+        label.setTextColor(contentOverride != 0 ? contentOverride : contentColor());
     }
 }

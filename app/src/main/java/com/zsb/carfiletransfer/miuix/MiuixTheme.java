@@ -92,6 +92,23 @@ public final class MiuixTheme {
         return MiuixColorScheme.light();
     }
 
+    /**
+     * Colour used by the file-type badge, mapped onto MIUIX semantic colours so
+     * the palette stays inside the component library.
+     */
+    public static int fileTypeColor(String type) {
+        MiuixColorScheme s = colors();
+        if (type == null) return s.onSurfaceVariant;
+        String t = type.toUpperCase();
+        if ("APK".equals(t)) return s.primary;
+        if ("ZIP".equals(t)) return s.warning;
+        if ("PDF".equals(t)) return s.error;
+        if ("PNG".equals(t)) return s.success;
+        if ("MP4".equals(t)) return 0xFFA121CE;
+        if ("DOC".equals(t)) return 0xFF0E9F9F;
+        return s.onSurfaceVariant;
+    }
+
     public static int dp(Context c, float value) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP,
                 value, c.getResources().getDisplayMetrics()));

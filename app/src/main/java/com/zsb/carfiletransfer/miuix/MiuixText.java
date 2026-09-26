@@ -53,6 +53,23 @@ public class MiuixText extends TextView {
         return this;
     }
 
+    /** Override the role's size with an explicit sp value from the design spec. */
+    public MiuixText setSizeSp(float sp) {
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        return this;
+    }
+
+    /** Override the role's weight: 400 regular, 500 medium, 600 semi-bold, 700 bold. */
+    public MiuixText setWeight(int weight) {
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            setTypeface(Typeface.create(Typeface.DEFAULT, Math.max(100, Math.min(900, weight)), false));
+        } else {
+            setTypeface(Typeface.create("sans-serif",
+                    weight >= 600 ? Typeface.BOLD : Typeface.NORMAL));
+        }
+        return this;
+    }
+
     public MiuixText setRole(Role role) {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, role.sizeSp);
         setTypeface(Typeface.create("sans-serif",

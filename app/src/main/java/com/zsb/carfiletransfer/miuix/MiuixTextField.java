@@ -4,6 +4,7 @@ import android.content.Context;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.View;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -20,7 +21,9 @@ public class MiuixTextField extends LinearLayout {
         super(c);
         setOrientation(LinearLayout.VERTICAL);
 
-        labelView = new MiuixText(c, label, MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
+        labelView = new MiuixText(c, label == null ? "" : label,
+                MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
+        if (label == null || label.length() == 0) labelView.setVisibility(View.GONE);
         addView(labelView, new LinearLayout.LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 

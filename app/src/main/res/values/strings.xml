@@ -1,4 +1,105 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">文件互传</string>
+
+    <!-- top bar -->
+    <string name="app_title">文件互传</string>
+    <string name="device_self">本机 · 车机</string>
+    <string name="device_car">车机</string>
+    <string name="device_phone">手机</string>
+    <string name="device_name_value">设备名称　车机</string>
+    <string name="network_tip">同一 Wi-Fi 或已开启本机热点</string>
+
+    <!-- adb -->
+    <string name="adb_idle">ADB 未连接</string>
+    <string name="adb_listening">ADB 待连接</string>
+    <string name="adb_connected">ADB 已连接 · %1$s</string>
+
+    <!-- transfer home -->
+    <string name="qr_wait_title">等待连接后生成二维码</string>
+    <string name="qr_wait_desc">在弹窗中选择连接方式，确认后此处将显示二维码</string>
+    <string name="qr_ready_title">扫码向本设备传文件</string>
+    <string name="qr_ready_desc">手机打开「扫一扫」，扫描下方二维码即可发送文件</string>
+    <string name="qr_mode_wifi">热点连接码</string>
+    <string name="qr_mode_addr">传输地址码</string>
+    <string name="not_connected">未连接</string>
+    <string name="not_connected_desc">选择连接方式后生成</string>
+    <string name="status_waiting">等待连接</string>
+    <string name="status_no_device">暂无设备连接</string>
+    <string name="status_ready">已就绪</string>
+    <string name="status_waiting_desc">等待手机扫码连接</string>
+    <string name="open_hotspot">打开热点</string>
+    <string name="close_hotspot">关闭热点</string>
+    <string name="stat_received">已接收文件</string>
+    <string name="stat_unit_files">个文件</string>
+    <string name="stat_space">已占用空间</string>
+    <string name="recent_title">最近接收</string>
+    <string name="see_all">查看全部 ›</string>
+    <string name="empty_recent">暂无接收记录</string>
+
+    <!-- connection dialog -->
+    <string name="connect_title">选择连接方式</string>
+    <string name="connect_desc">建立局域网连接后，手机扫码即可向本机传文件</string>
+    <string name="connect_tip">两种方案任选其一，连接成功后本机将自动生成二维码</string>
+    <string name="connect_confirm">确定并开始传输</string>
+    <string name="opt_phone_title">手机连接车机热点</string>
+    <string name="opt_phone_desc">在手机 Wi-Fi 中连接本机热点「车机」</string>
+    <string name="opt_car_title">车机连接手机热点</string>
+    <string name="opt_car_desc">在本机 Wi-Fi 中连接手机共享的热点</string>
+
+    <!-- file list -->
+    <string name="list_title">已接收文件</string>
+    <string name="search_hint">搜索文件名</string>
+    <string name="clean_all">一键清理</string>
+    <string name="filter_all">全部</string>
+    <string name="filter_app">应用</string>
+    <string name="filter_image">图片</string>
+    <string name="filter_video">视频</string>
+    <string name="filter_doc">文档</string>
+    <string name="empty_list">还没有接收到文件</string>
+    <string name="view">查看</string>
+
+    <!-- detail -->
+    <string name="share">分享</string>
+    <string name="install">安装</string>
+    <string name="open">打开</string>
+    <string name="delete">删除</string>
+    <string name="delete_title">确认删除该文件？</string>
+    <string name="safe_scanned">已通过安全扫描</string>
+    <string name="detail_size">大小</string>
+    <string name="detail_type">类型</string>
+    <string name="detail_time">接收时间</string>
+    <string name="detail_source">来源</string>
+    <string name="detail_path">存储路径</string>
+    <string name="permission_title">权限请求</string>
+    <string name="perm_storage">存储</string>
+    <string name="perm_contacts">通讯录</string>
+    <string name="perm_notify">通知</string>
+
+    <!-- clean dialog -->
+    <string name="clean_title">确认清理全部已接收文件？</string>
+    <string name="clean_message">将清理 %1$d 个文件，释放约 %2$s 存储空间，此操作不可撤销。</string>
+    <string name="clean_confirm">确认清理</string>
+    <string name="cleaned">已清理 %1$d 个文件</string>
+    <string name="cancel">取消</string>
+    <string name="ok">好的</string>
+
+    <!-- hotspot -->
+    <string name="hotspot_failed">热点启动失败：%1$s</string>
+    <string name="ap_manual_title">指定热点账号密码</string>
+    <string name="ap_manual_desc">系统热点配置读取受限，请填写车机原本的热点名称与密码，用于生成连接二维码。</string>
+    <string name="ap_ssid_label">热点名称</string>
+    <string name="ap_ssid_hint">例如 CarHotspot</string>
+    <string name="ap_pass_label">热点密码</string>
+    <string name="ap_pass_hint">至少 8 位</string>
+    <string name="save_and_start">保存并开启</string>
+
+    <!-- install -->
+    <string name="installing">正在安装…</string>
+    <string name="install_ok">安装完成</string>
+    <string name="install_failed">安装失败</string>
+    <string name="use_system_installer">用系统安装器</string>
+    <string name="no_installer">没有可用的安装器</string>
+    <string name="no_viewer">没有可以打开该文件的应用</string>
+    <string name="server_failed">接收服务启动失败</string>
 </resources>

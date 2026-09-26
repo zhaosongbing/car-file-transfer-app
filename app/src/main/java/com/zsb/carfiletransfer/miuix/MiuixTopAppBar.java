@@ -1,7 +1,9 @@
 package com.zsb.carfiletransfer.miuix;
 
 import android.content.Context;
+import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
+import android.view.View;
 import android.widget.LinearLayout;
 
 /**
@@ -13,10 +15,21 @@ public class MiuixTopAppBar extends LinearLayout {
     private final MiuixText subtitle;
     private final LinearLayout actionRow;
 
+    private final Context ctx;
+    private final LinearLayout leadingRow;
+    private final LinearLayout titleRow;
+
     public MiuixTopAppBar(Context c, CharSequence titleText, CharSequence subtitleText) {
         super(c);
+        ctx = c;
         setOrientation(LinearLayout.HORIZONTAL);
         setGravity(Gravity.CENTER_VERTICAL);
+
+        leadingRow = new LinearLayout(c);
+        leadingRow.setOrientation(LinearLayout.HORIZONTAL);
+        leadingRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        addView(leadingRow, new LinearLayout.LayoutParams(
+                LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 
         LinearLayout textColumn = new LinearLayout(c);
         textColumn.setOrientation(LinearLayout.VERTICAL);
@@ -24,8 +37,13 @@ public class MiuixTopAppBar extends LinearLayout {
                 0, LayoutParams.WRAP_CONTENT, 1f);
         textColumn.setLayoutParams(textLp);
 
+        titleRow = new LinearLayout(c);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+
         title = new MiuixText(c, titleText, MiuixText.Role.DISPLAY);
-        textColumn.addView(title);
+        titleRow.addView(title);
+        textColumn.addView(titleRow);
 
         subtitle = new MiuixText(c, subtitleText, MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
@@ -43,6 +61,80 @@ public class MiuixTopAppBar extends LinearLayout {
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
     }
 
+    /** Put a control (back chevron, logo) in front of the title. */
+    public void setLeading(View v) {
+        leadingRow.removeAllViews();
+        if (v == null) {
+            leadingRow.setVisibility(View.GONE);
+            return;
+        }
+        leadingRow.setVisibility(View.VISIBLE);
+        leadingRow.addView(v);
+    }
+
+    /** Bar height from the design spec, in dp. */
+    public MiuixTopAppBar setHeightDp(float dp) {
+        setMinimumHeight(MiuixTheme.dp(ctx, dp));
+        return this;
+    }
+
+    /** Bar padding, in dp (horizontal / vertical). */
+    public MiuixTopAppBar setPaddingDp(float hDp, float vDp) {
+        setPadding(MiuixTheme.dp(ctx, hDp), MiuixTheme.dp(ctx, vDp),
+                MiuixTheme.dp(ctx, hDp), MiuixTheme.dp(ctx, vDp));
+        return this;
+    }
+
+    /** Title size, in sp. */
+    public MiuixTopAppBar setTitleSizeSp(float sp) {
+        title.setSizeSp(sp);
+        return this;
+    }
+
+    /** Hairline separator under the bar. */
+    public MiuixTopAppBar setBottomDivider(boolean show, int color, float heightDp) {
+        if (!show) {
+            setBackground(null);
+            return this;
+        }
+        int h = Math.max(1, MiuixTheme.dp(ctx, heightDp));
+        GradientDrawable g = new GradientDrawable();
+        g.setSize(1, h);
+        g.setColor(color);
+        // draw the line at the bottom edge using a layer-less approach
+        setBackground(new BottomLineDrawable(color, h));
+        return this;
+    }
+
+    /** Draws a single hairline at the bottom of the view. */
+    private static final class BottomLineDrawable extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint paint = new android.graphics.Paint();
+        private final int h;
+
+        BottomLineDrawable(int color, int height) {
+            paint.setColor(color);
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            h = height;
+        }
+
+        public void draw(android.graphics.Canvas canvas) {
+            android.graphics.Rect b = getBounds();
+            canvas.drawRect(b.left, b.bottom - h, b.right, b.bottom, paint);
+        }
+
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        public void setColorFilter(android.graphics.ColorFilter cf) {
+            paint.setColorFilter(cf);
+        }
+
+        public int getOpacity() {
+            return android.graphics.PixelFormat.TRANSLUCENT;
+        }
+    }
+
     public void setSubtitle(CharSequence text) {
         subtitle.setText(text);
     }
@@ -51,12 +143,25 @@ public class MiuixTopAppBar extends LinearLayout {
         title.setText(text);
     }
 
-    /** Append an action control (usually a MiuixButton) to the end side. */
-    public void addAction(MiuixButton button) {
+    /** Append an arbitrary control (pill, status chip) right after the title. */
+    public void addTitleSuffix(View v) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
-        lp.leftMargin = MiuixTheme.dp(getContext(), 8f);
-        actionRow.addView(button, lp);
+        lp.leftMargin = MiuixTheme.dp(ctx, 12f);
+        titleRow.addView(v, lp);
+    }
+
+    /** Append an arbitrary control to the end side. */
+    public void addActionView(View v) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = MiuixTheme.dp(ctx, 12f);
+        actionRow.addView(v, lp);
+    }
+
+    /** Append an action control (usually a MiuixButton) to the end side. */
+    public void addAction(MiuixButton button) {
+        addActionView(button);
     }
 
     public void clearActions() {

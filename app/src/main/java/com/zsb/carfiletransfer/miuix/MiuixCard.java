@@ -33,8 +33,23 @@ public class MiuixCard extends LinearLayout {
         return this;
     }
 
+    /** Per-side content padding, in dp: left / top / right / bottom. */
+    public MiuixCard setContentPaddingDp(float l, float t, float r, float b) {
+        setPadding(MiuixTheme.dp(getContext(), l), MiuixTheme.dp(getContext(), t),
+                MiuixTheme.dp(getContext(), r), MiuixTheme.dp(getContext(), b));
+        return this;
+    }
+
     public MiuixCard setCardBackground(int color) {
         setBackground(MiuixTheme.rounded(color, MiuixTheme.dp(getContext(), radiusDp)));
+        return this;
+    }
+
+    /** Surface + hairline outline, the treatment used by the design spec's cards. */
+    public MiuixCard setOutline(int strokeColor, float strokeDp) {
+        setBackground(MiuixTheme.outlined(MiuixTheme.colors().surface, strokeColor,
+                MiuixTheme.dp(getContext(), radiusDp),
+                Math.max(1, MiuixTheme.dp(getContext(), strokeDp))));
         return this;
     }
 

@@ -48,6 +48,7 @@ public class MiuixDialog {
         private OnActionListener positiveListener;
         private OnActionListener negativeListener;
         private boolean cancelable = true;
+        private float widthDp = 420f;
 
         public Builder(Context c) {
             this.c = c;
@@ -85,6 +86,28 @@ public class MiuixDialog {
             return this;
         }
 
+        /** Dialog width from the design spec, in dp. */
+        public Builder setWidthDp(float dp) {
+            widthDp = dp;
+            return this;
+        }
+
+        /** Card corner radius from the design spec, in dp. */
+        public Builder setRadiusDp(float dp) {
+            radiusDp = dp;
+            return this;
+        }
+
+        private float radiusDp = MiuixTheme.RADIUS_DIALOG;
+
+        /** Card content padding from the design spec, in dp. */
+        public Builder setPaddingDp(float dp) {
+            paddingDp = dp;
+            return this;
+        }
+
+        private float paddingDp = 24f;
+
         public MiuixDialog show() {
             final MiuixDialog[] ref = new MiuixDialog[1];
             Dialog d = new Dialog(c);
@@ -95,9 +118,9 @@ public class MiuixDialog {
             }
             d.setCancelable(cancelable);
 
-            MiuixCard card = new MiuixCard(c, MiuixTheme.RADIUS_DIALOG);
-            card.setContentPadding(24f);
-            int width = MiuixTheme.dp(c, 420f);
+            MiuixCard card = new MiuixCard(c, radiusDp);
+            card.setContentPadding(paddingDp);
+            int width = MiuixTheme.dp(c, widthDp);
             int screen = c.getResources().getDisplayMetrics().widthPixels;
             int max = (int) (screen * 0.86f);
             card.setLayoutParams(new ViewGroup.LayoutParams(Math.min(width, max),
