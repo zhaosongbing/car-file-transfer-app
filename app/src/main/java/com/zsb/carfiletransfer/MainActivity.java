@@ -4,12 +4,14 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.AssetManager;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -29,6 +31,7 @@ import com.zsb.carfiletransfer.miuix.MiuixText;
 import com.zsb.carfiletransfer.miuix.MiuixTextField;
 import com.zsb.carfiletransfer.miuix.MiuixTheme;
 import com.zsb.carfiletransfer.miuix.MiuixTopAppBar;
+import com.zsb.carfiletransfer.miuix.MiuixWindowSizeClass;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -42,20 +45,24 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Car-side UI rebuilt strictly against the design draft (1194 x 834 canvas),
- * built exclusively from MIUIX components:
- * MiuixTopAppBar / MiuixCard / MiuixText / MiuixButton / MiuixListItem /
- * MiuixTabRow / MiuixDialog / MiuixQrView / MiuixTextField.
+ * Car-side UI.
+ *
+ * <p>Built exclusively from MIUIX components - no WebView is used anywhere in
+ * the app. The layout is responsive: every spacing / size token is derived from
+ * {@link MiuixWindowSizeClass}, and at the EXPANDED break point the values fall
+ * back to the exact numbers of the design draft (1194 x 834).</p>
  */
 public class MainActivity extends Activity {
 
-    // ---- design draft tokens ----
-    private static final float BAR_H = 92f;
-    private static final float PAD_SCREEN = 48f;
-    private static final float QR_CARD_W = 460f;
-    private static final float QR_CARD_PAD = 40f;
-    private static final float QR_CARD_GAP = 20f;
-    private static final float QR_SIZE = 300f;
+    // ---- design draft tokens (EXPANDED, 1194 x 834) ----
+    private static final float BAR_H_DRAFT = 92f;
+    private static final float PAD_DRAFT = 48f;
+    private static final float QR_CARD_W_DRAFT = 460f;
+    private static final float QR_CARD_PAD_DRAFT = 40f;
+    private static final float QR_SIZE_DRAFT = 300f;
+    private static final float GAP_MAIN_DRAFT = 40f;
+    private static final float GAP_CARD_DRAFT = 20f;
+
     private static final float R_QR_CARD = 32f;
     private static final float R_CARD = 24f;
     private static final float R_ROW = 16f;
@@ -69,6 +76,17 @@ public class MainActivity extends Activity {
     private static final int PAGE_HOME = 0;
     private static final int PAGE_LIST = 1;
     private static final int PAGE_DETAIL = 2;
+
+    // ---- responsive tokens ----
+    private MiuixWindowSizeClass wsc;
+    private float pad = PAD_DRAFT;
+    private float barH = BAR_H_DRAFT;
+    private float qrCardW = QR_CARD_W_DRAFT;
+    private float qrCardPad = QR_CARD_PAD_DRAFT;
+    private float qrSize = QR_SIZE_DRAFT;
+    private float gapMain = GAP_MAIN_DRAFT;
+    private float gapCard = GAP_CARD_DRAFT;
+    private boolean twoPane = true;
 
     private FrameLayout root;
     private LinearLayout pageHome;
@@ -93,6 +111,7 @@ public class MainActivity extends Activity {
     private MiuixText adbText;
     private MiuixTabRow qrModeRow;
     private MiuixButton btnHotspot;
+    private MiuixText apDetail;
 
     // list
     private MiuixText countBadge;
@@ -112,6 +131,7 @@ public class MainActivity extends Activity {
     private int connectOption = 0;
     private String detailFile;
     private int filterIndex = 0;
+    private boolean connectDialogShown = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -126,6 +146,23 @@ public class MainActivity extends Activity {
         apConfig = softAp.readSystemConfig();
         if (apConfig == null) apConfig = loadManualConfig();
 
+        buildUi();
+        showPage(PAGE_HOME);
+        startServer();
+        ui.post(adbPoll);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        buildUi();
+        showPage(currentPage);
+    }
+
+    /** (Re)build the whole view tree - cheap enough to redo on rotation. */
+    private void buildUi() {
+        computeTokens();
+
         root = new FrameLayout(this);
         root.setBackgroundColor(MiuixTheme.colors().background);
 
@@ -138,23 +175,61 @@ public class MainActivity extends Activity {
         root.addView(pageDetail, matchParent());
 
         setContentView(root);
-        showPage(PAGE_HOME);
-        startServer();
-        ui.post(adbPoll);
+
+        hotspotUp = softAp.isHotspotUp();
+        refreshHome();
+        renderList();
+    }
+
+    private void computeTokens() {
+        wsc = MiuixWindowSizeClass.current(this);
+        twoPane = wsc.isTwoPane();
+        MiuixWindowSizeClass.SizeClass sc = wsc.getSizeClass();
+
+        if (sc == MiuixWindowSizeClass.SizeClass.EXPANDED) {
+            pad = PAD_DRAFT;
+            barH = BAR_H_DRAFT;
+        } else if (sc == MiuixWindowSizeClass.SizeClass.MEDIUM) {
+            pad = 32f;
+            barH = 72f;
+        } else {
+            pad = 20f;
+            barH = 56f;
+        }
+
+        float contentW = Math.max(280f, wsc.getWidthDp() - pad * 2f);
+        if (twoPane) {
+            qrCardW = Math.min(QR_CARD_W_DRAFT, contentW * 0.42f);
+            gapMain = sc == MiuixWindowSizeClass.SizeClass.EXPANDED ? GAP_MAIN_DRAFT : 28f;
+        } else {
+            qrCardW = contentW;
+            gapMain = sc == MiuixWindowSizeClass.SizeClass.COMPACT ? 16f : 24f;
+        }
+
+        qrCardPad = qrCardW >= 400f ? QR_CARD_PAD_DRAFT : (qrCardW >= 320f ? 28f : 20f);
+        gapCard = qrCardW >= 400f ? GAP_CARD_DRAFT : 16f;
+
+        float inner = Math.max(160f, qrCardW - qrCardPad * 2f);
+        qrSize = Math.min(sc == MiuixWindowSizeClass.SizeClass.EXPANDED ? QR_SIZE_DRAFT : 260f, inner);
+        qrSize = Math.min(qrSize, Math.max(160f, wsc.getHeightDp() * 0.40f));
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        hotspotUp = softAp.isHotspotUp();
         refreshHome();
-        if (!linked) showConnectDialog();
+        if (!linked && !connectDialogShown) {
+            connectDialogShown = true;
+            showConnectDialog();
+        }
     }
 
     @Override
     protected void onDestroy() {
         ui.removeCallbacks(adbPoll);
         if (server != null) server.stop();
-        softAp.stopLocalOnly();
+        softAp.closeHotspot();
         super.onDestroy();
     }
 
@@ -186,34 +261,47 @@ public class MainActivity extends Activity {
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.app_title), null);
-        bar.setHeightDp(BAR_H).setPaddingDp(PAD_SCREEN, 0f).setTitleSizeSp(22f);
+        bar.setHeightDp(barH).setPaddingDp(pad, 0f)
+                .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
         bar.setLeading(logoView());
-        bar.addActionView(devicePill());
         bar.addActionView(adbPill());
         page.addView(bar, wrapWidth());
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        page.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
         LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.HORIZONTAL);
-        content.setPadding(dp(PAD_SCREEN), dp(PAD_SCREEN), dp(PAD_SCREEN), dp(PAD_SCREEN));
-        LinearLayout.LayoutParams contentLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        page.addView(content, contentLp);
+        content.setOrientation(twoPane ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        scroll.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         content.addView(buildQrCard());
-        content.addView(buildSideColumn(), new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+
+        LinearLayout.LayoutParams sideLp = twoPane
+                ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                : wrapWidth();
+        if (twoPane) {
+            sideLp.leftMargin = dp(gapMain);
+        } else {
+            sideLp.topMargin = dp(gapMain);
+        }
+        content.addView(buildSideColumn(), sideLp);
+
         return page;
     }
 
     private View logoView() {
         FrameLayout logo = new FrameLayout(this);
-        int s = dp(44f);
+        int s = dp(wsc.isCompact() ? 36f : 44f);
         logo.setBackground(MiuixTheme.rounded(MiuixTheme.colors().primary, dp(R_BLOCK)));
         TextView arrow = new TextView(this);
         arrow.setText("↑");
         arrow.setTextColor(Color.WHITE);
-        arrow.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 20f);
+        arrow.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, wsc.isCompact() ? 17f : 20f);
         arrow.setGravity(Gravity.CENTER);
         logo.addView(arrow, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(s, s);
@@ -222,25 +310,7 @@ public class MainActivity extends Activity {
         return logo;
     }
 
-    private View devicePill() {
-        LinearLayout pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setBackground(MiuixTheme.rounded(
-                MiuixTheme.colors().surfaceContainer, dp(R_PILL)));
-        pill.setPadding(dp(16f), dp(10f), dp(16f), dp(10f));
-
-        TextView dot = new TextView(this);
-        dot.setBackground(MiuixTheme.rounded(MiuixTheme.colors().success, dp(4f)));
-        pill.addView(dot, new LinearLayout.LayoutParams(dp(8f), dp(8f)));
-
-        MiuixText t = new MiuixText(this, getString(R.string.device_self),
-                MiuixText.Role.CAPTION);
-        t.setSizeSp(14f).setWeight(500);
-        pill.addView(t, marginLeft(8f));
-        return pill;
-    }
-
+    /** Top right: live ADB connection state (replaces the device name chip). */
     private View adbPill() {
         LinearLayout pill = new LinearLayout(this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
@@ -248,6 +318,11 @@ public class MainActivity extends Activity {
         pill.setBackground(MiuixTheme.rounded(
                 MiuixTheme.colors().surfaceContainer, dp(R_PILL)));
         pill.setPadding(dp(16f), dp(10f), dp(16f), dp(10f));
+        pill.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showAdbDialog();
+            }
+        });
 
         adbDot = new TextView(this);
         adbDot.setBackground(MiuixTheme.rounded(MiuixTheme.colors().outline, dp(4f)));
@@ -255,7 +330,7 @@ public class MainActivity extends Activity {
 
         adbText = new MiuixText(this, getString(R.string.adb_idle),
                 MiuixText.Role.CAPTION, MiuixText.Tone.SECONDARY);
-        adbText.setSizeSp(14f).setWeight(500);
+        adbText.setSizeSp(wsc.isCompact() ? 12f : 14f).setWeight(500);
         pill.addView(adbText, marginLeft(8f));
         return pill;
     }
@@ -263,30 +338,35 @@ public class MainActivity extends Activity {
     private View buildQrCard() {
         MiuixCard card = new MiuixCard(this, R_QR_CARD);
         card.setOutline(MiuixTheme.colors().outline, 1f);
-        card.setContentPaddingDp(QR_CARD_PAD, QR_CARD_PAD, QR_CARD_PAD, QR_CARD_PAD);
+        card.setContentPaddingDp(qrCardPad, qrCardPad, qrCardPad, qrCardPad);
         card.setGravity(Gravity.CENTER_HORIZONTAL);
         card.setLayoutParams(new LinearLayout.LayoutParams(
-                dp(QR_CARD_W), ViewGroup.LayoutParams.MATCH_PARENT));
+                twoPane ? dp(qrCardW) : ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         qrTitle = new MiuixText(this, getString(R.string.qr_wait_title),
                 MiuixText.Role.SUBTITLE);
-        qrTitle.setSizeSp(20f).setWeight(700);
+        qrTitle.setSizeSp(wsc.isCompact() ? 17f : 20f).setWeight(700);
+        qrTitle.setGravity(Gravity.CENTER_HORIZONTAL);
+        qrTitle.setSingleLine(false);
         card.addView(qrTitle);
 
         qrDesc = new MiuixText(this, getString(R.string.qr_wait_desc),
                 MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
-        qrDesc.setSizeSp(14f).setWeight(400);
+        qrDesc.setSizeSp(wsc.isCompact() ? 12f : 14f).setWeight(400);
         qrDesc.setSingleLine(false);
         qrDesc.setGravity(Gravity.CENTER_HORIZONTAL);
         LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(
-                dp(360f), ViewGroup.LayoutParams.WRAP_CONTENT);
-        dLp.topMargin = dp(QR_CARD_GAP);
+                dp(Math.min(360f, qrCardW - qrCardPad * 2f)),
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        dLp.topMargin = dp(gapCard);
+        dLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(qrDesc, dLp);
 
         qrSlot = new FrameLayout(this);
         LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(
-                dp(QR_SIZE), dp(QR_SIZE));
-        qLp.topMargin = dp(QR_CARD_GAP);
+                dp(qrSize), dp(qrSize));
+        qLp.topMargin = dp(gapCard);
         qLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(qrSlot, qLp);
 
@@ -301,39 +381,51 @@ public class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mLp.topMargin = dp(QR_CARD_GAP);
+        mLp.topMargin = dp(gapCard);
         mLp.gravity = Gravity.CENTER_HORIZONTAL;
-        qrModeRow.setLayoutParams(mLp);
-        card.addView(qrModeRow);
+        card.addView(qrModeRow, mLp);
 
         LinearLayout devBox = new LinearLayout(this);
         devBox.setOrientation(LinearLayout.VERTICAL);
         devBox.setGravity(Gravity.CENTER_HORIZONTAL);
         LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bLp.topMargin = dp(QR_CARD_GAP);
+        bLp.topMargin = dp(gapCard);
         bLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(devBox, bLp);
 
         MiuixText devName = new MiuixText(this, getString(R.string.device_name_value),
                 MiuixText.Role.BODY_SMALL);
-        devName.setSizeSp(15f).setWeight(600);
+        devName.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(600);
+        devName.setGravity(Gravity.CENTER_HORIZONTAL);
         devBox.addView(devName);
 
         devAddrValue = new MiuixText(this, addressText(), MiuixText.Role.BODY_SMALL);
-        devAddrValue.setSizeSp(15f).setWeight(600);
+        devAddrValue.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(600);
+        devAddrValue.setGravity(Gravity.CENTER_HORIZONTAL);
         devBox.addView(devAddrValue);
+
+        apDetail = new MiuixText(this, apDetailText(), MiuixText.Role.MICRO,
+                MiuixText.Tone.TERTIARY);
+        apDetail.setSizeSp(12f).setWeight(400);
+        apDetail.setGravity(Gravity.CENTER_HORIZONTAL);
+        apDetail.setSingleLine(false);
+        LinearLayout.LayoutParams apLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        apLp.topMargin = dp(6f);
+        apLp.gravity = Gravity.CENTER_HORIZONTAL;
+        card.addView(apDetail, apLp);
 
         MiuixText tip = new MiuixText(this, getString(R.string.network_tip),
                 MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
-        tip.setSizeSp(15f).setWeight(500);
+        tip.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(500);
         tip.setGravity(Gravity.CENTER);
         tip.setBackground(MiuixTheme.rounded(
                 MiuixTheme.colors().surfaceContainer, dp(R_PILL)));
         tip.setPadding(dp(14f), dp(8f), dp(14f), dp(8f));
         LinearLayout.LayoutParams tLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        tLp.topMargin = dp(QR_CARD_GAP);
+        tLp.topMargin = dp(gapCard);
         tLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(tip, tLp);
 
@@ -344,7 +436,7 @@ public class MainActivity extends Activity {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
 
-        // 1 - connection status card
+        // 1 - connection status + hotspot button
         MiuixCard status = new MiuixCard(this, R_CARD);
         status.setCardBackground(MiuixTheme.colors().surfaceContainer);
         status.setContentPaddingDp(24f, 24f, 24f, 24f);
@@ -487,7 +579,8 @@ public class MainActivity extends Activity {
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.list_title), null);
-        bar.setHeightDp(BAR_H).setPaddingDp(PAD_SCREEN, 0f).setTitleSizeSp(22f);
+        bar.setHeightDp(barH).setPaddingDp(pad, 0f)
+                .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
 
         MiuixText back = new MiuixText(this, "‹", MiuixText.Role.DISPLAY);
@@ -499,8 +592,7 @@ public class MainActivity extends Activity {
         });
         bar.setLeading(back);
         bar.addTitleSuffix(countChip());
-        bar.addActionView(searchField());
-        bar.addActionView(filterButton());
+        if (!wsc.isCompact()) bar.addActionView(searchField());
         bar.addActionView(cleanButton());
         page.addView(bar, wrapWidth());
 
@@ -519,7 +611,7 @@ public class MainActivity extends Activity {
         });
         LinearLayout fl = new LinearLayout(this);
         fl.setOrientation(LinearLayout.HORIZONTAL);
-        fl.setPadding(dp(PAD_SCREEN), dp(16f), dp(PAD_SCREEN), dp(16f));
+        fl.setPadding(dp(pad), dp(16f), dp(pad), dp(16f));
         fl.addView(filterRow, wrapContent());
         page.addView(fl, wrapWidth());
 
@@ -530,7 +622,7 @@ public class MainActivity extends Activity {
 
         listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
-        listBox.setPadding(dp(PAD_SCREEN), dp(20f), dp(PAD_SCREEN), dp(20f));
+        listBox.setPadding(dp(pad), dp(20f), dp(pad), dp(20f));
         scroll.addView(listBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -553,17 +645,6 @@ public class MainActivity extends Activity {
 
     private View searchField() {
         return new MiuixTextField(this, null, getString(R.string.search_hint));
-    }
-
-    private View filterButton() {
-        MiuixButton b = new MiuixButton(this, "≡",
-                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
-        b.setOutlined(true, MiuixTheme.colors().outline);
-        b.setRadiusDp(R_PILL).setPaddingDp(0f, 0f);
-        b.setMinimumWidth(dp(44f));
-        b.setMinimumHeight(dp(44f));
-        b.setEnabled(false);
-        return b;
     }
 
     private View cleanButton() {
@@ -757,7 +838,8 @@ public class MainActivity extends Activity {
         String type = FileRepository.typeOf(name);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, name, null);
-        bar.setHeightDp(BAR_H).setPaddingDp(PAD_SCREEN, 0f).setTitleSizeSp(22f);
+        bar.setHeightDp(barH).setPaddingDp(pad, 0f)
+                .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
 
         MiuixText back = new MiuixText(this, "‹", MiuixText.Role.DISPLAY);
@@ -783,11 +865,16 @@ public class MainActivity extends Activity {
         bar.addAction(share);
         detailBox.addView(bar, wrapWidth());
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.HORIZONTAL);
-        content.setPadding(dp(PAD_SCREEN), dp(PAD_SCREEN), dp(PAD_SCREEN), dp(PAD_SCREEN));
-        detailBox.addView(content, new LinearLayout.LayoutParams(
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        detailBox.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(twoPane ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        scroll.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // preview card
         MiuixCard preview = new MiuixCard(this, R_CARD);
@@ -795,7 +882,8 @@ public class MainActivity extends Activity {
         preview.setContentPaddingDp(32f, 40f, 32f, 40f);
         preview.setGravity(Gravity.CENTER_HORIZONTAL);
         content.addView(preview, new LinearLayout.LayoutParams(
-                dp(420f), ViewGroup.LayoutParams.MATCH_PARENT));
+                twoPane ? dp(420f) : ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         FrameLayout icon = new FrameLayout(this);
         icon.setBackground(MiuixTheme.rounded(MiuixTheme.colors().primary, dp(28f)));
@@ -830,11 +918,19 @@ public class MainActivity extends Activity {
         // info column
         LinearLayout infoCol = new LinearLayout(this);
         infoCol.setOrientation(LinearLayout.VERTICAL);
-        content.addView(infoCol, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        LinearLayout.LayoutParams icLp = twoPane
+                ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                : wrapWidth();
+        if (twoPane) {
+            icLp.leftMargin = dp(gapMain);
+        } else {
+            icLp.topMargin = dp(gapMain);
+        }
+        content.addView(infoCol, icLp);
 
         MiuixText bigTitle = new MiuixText(this, name, MiuixText.Role.DISPLAY);
-        bigTitle.setSizeSp(24f).setWeight(700);
+        bigTitle.setSizeSp(wsc.isCompact() ? 20f : 24f).setWeight(700);
+        bigTitle.setSingleLine(false);
         infoCol.addView(bigTitle);
 
         MiuixCard detailCard = new MiuixCard(this, R_ROW);
@@ -964,6 +1060,7 @@ public class MainActivity extends Activity {
 
         MiuixText v = new MiuixText(this, value, MiuixText.Role.BODY_SMALL);
         v.setSizeSp(14f).setWeight(600);
+        v.setSingleLine(false);
         row.addView(v);
         parent.addView(row);
     }
@@ -1026,7 +1123,7 @@ public class MainActivity extends Activity {
 
         new MiuixDialog.Builder(this)
                 .setContent(body)
-                .setWidthDp(540f)
+                .setWidthDp(Math.min(540f, wsc.getWidthDp() - 32f))
                 .setRadiusDp(24f)
                 .setPaddingDp(32f)
                 .setCancelable(false)
@@ -1039,7 +1136,6 @@ public class MainActivity extends Activity {
                                 onConnected();
                             }
                         })
-                .setNegative(getString(R.string.cancel), null)
                 .show();
     }
 
@@ -1117,6 +1213,92 @@ public class MainActivity extends Activity {
         };
     }
 
+    /** ADB state detail, opened from the top-right pill. */
+    private void showAdbDialog() {
+        final AdbManager.AdbStatus s = AdbManager.query();
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+
+        addInfoRow(body, getString(R.string.adb_daemon),
+                s.daemonRunning ? getString(R.string.adb_state_running)
+                        : getString(R.string.adb_state_stopped));
+        addInfoRow(body, getString(R.string.adb_port_label), String.valueOf(s.tcpPort));
+        addInfoRow(body, getString(R.string.adb_listen_label),
+                s.listening ? getString(R.string.adb_yes) : getString(R.string.adb_no));
+        addInfoRow(body, getString(R.string.adb_clients_label),
+                s.clients.isEmpty() ? getString(R.string.adb_client_none)
+                        : joinClients(s.clients));
+
+        MiuixButton enable = new MiuixButton(this, getString(R.string.adb_enable_tcp),
+                MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
+        enable.setRadiusDp(R_BTN);
+        LinearLayout.LayoutParams eLp = wrapWidth();
+        eLp.topMargin = dp(16f);
+        enable.setLayoutParams(eLp);
+        enable.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                new Thread(new Runnable() {
+                    public void run() {
+                        final AdbManager.InstallResult r =
+                                AdbManager.enableTcp(AdbManager.DEFAULT_TCP_PORT);
+                        ui.post(new Runnable() {
+                            public void run() {
+                                toast(r.summary);
+                            }
+                        });
+                    }
+                }).start();
+            }
+        });
+        body.addView(enable);
+
+        MiuixText tip = new MiuixText(this, getString(R.string.adb_enable_tip),
+                MiuixText.Role.MICRO, MiuixText.Tone.TERTIARY);
+        tip.setSizeSp(12f).setWeight(400);
+        tip.setSingleLine(false);
+        LinearLayout.LayoutParams tLp = wrapWidth();
+        tLp.topMargin = dp(8f);
+        body.addView(tip, tLp);
+
+        new MiuixDialog.Builder(this)
+                .setTitle(getString(R.string.adb_title))
+                .setContent(body)
+                .setWidthDp(Math.min(460f, wsc.getWidthDp() - 32f))
+                .setPositive(getString(R.string.ok), null)
+                .show();
+    }
+
+    private void addInfoRow(LinearLayout parent, String key, String value) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams lp = wrapWidth();
+        lp.topMargin = parent.getChildCount() == 0 ? 0 : dp(10f);
+        row.setLayoutParams(lp);
+
+        MiuixText k = new MiuixText(this, key, MiuixText.Role.CAPTION,
+                MiuixText.Tone.TERTIARY);
+        k.setSizeSp(13f).setWeight(400);
+        k.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(k);
+
+        MiuixText v = new MiuixText(this, value, MiuixText.Role.BODY_SMALL);
+        v.setSizeSp(14f).setWeight(600);
+        row.addView(v);
+        parent.addView(row);
+    }
+
+    private String joinClients(java.util.List<String> clients) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < clients.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(clients.get(i));
+        }
+        return sb.toString();
+    }
+
     private void showCleanDialog() {
         final int count = repo.listJson().length();
         final String size = human(repo.totalSize());
@@ -1159,7 +1341,7 @@ public class MainActivity extends Activity {
                 .setTitle(getString(R.string.clean_title))
                 .setMessage(getString(R.string.clean_message, count, size))
                 .setContent(buttons)
-                .setWidthDp(480f)
+                .setWidthDp(Math.min(480f, wsc.getWidthDp() - 32f))
                 .setRadiusDp(24f)
                 .setPaddingDp(28f)
                 .show();
@@ -1200,58 +1382,90 @@ public class MainActivity extends Activity {
                 .setTitle(getString(R.string.ap_manual_title))
                 .setMessage(getString(R.string.ap_manual_desc))
                 .setContent(body)
-                .setWidthDp(480f)
+                .setWidthDp(Math.min(480f, wsc.getWidthDp() - 32f))
                 .setPositive(getString(R.string.save_and_start),
                         new MiuixDialog.OnActionListener() {
                             public void onAction(MiuixDialog d) {
                                 saveManualConfig(ssid.getText(), pass.getText());
                                 d.dismiss();
-                                startHotspot();
+                                openHotspot();
                             }
                         })
                 .setNegative(getString(R.string.cancel), null)
                 .show();
     }
 
+    private void showHotspotFailedDialog(String reason) {
+        new MiuixDialog.Builder(this)
+                .setTitle(getString(R.string.hotspot_failed_title))
+                .setMessage(getString(R.string.hotspot_failed, reason))
+                .setPositive(getString(R.string.open_ap_settings),
+                        new MiuixDialog.OnActionListener() {
+                            public void onAction(MiuixDialog d) {
+                                d.dismiss();
+                                openTetherSettings();
+                            }
+                        })
+                .setNegative(getString(R.string.cancel), null)
+                .show();
+    }
+
+    private void openTetherSettings() {
+        try {
+            startActivity(new Intent("android.settings.TETHER_SETTINGS"));
+            return;
+        } catch (Exception ignored) {
+        }
+        try {
+            startActivity(new Intent(Settings.Panel.ACTION_WIFI));
+        } catch (Exception e) {
+            toast(getString(R.string.no_settings));
+        }
+    }
+
     // ---------------------------------------------------------------- behaviour
 
     private void onConnected() {
         refreshHome();
-        if (!hotspotUp && connectOption == 0) startHotspot();
+        if (!hotspotUp && connectOption == 0) openHotspot();
     }
 
     private void onHotspotClicked() {
         if (hotspotUp) {
-            softAp.stopLocalOnly();
+            softAp.closeHotspot();
             hotspotUp = false;
+            apConfig = softAp.readSystemConfig();
+            if (apConfig == null) apConfig = loadManualConfig();
             refreshHome();
+            toast(getString(R.string.hotspot_off));
             return;
         }
         if (apConfig == null || !apConfig.isValid()) {
             showManualConfigDialog();
             return;
         }
-        startHotspot();
+        openHotspot();
     }
 
-    private void startHotspot() {
-        softAp.startLocalOnly(new SoftApManager.Callback() {
-            public void onStarted(final SoftApManager.ApConfig config) {
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        hotspotUp = true;
-                        if (config != null && config.isValid()) apConfig = config;
-                        refreshHome();
-                    }
-                });
+    /** Open the device hotspot with the car unit's own credentials. */
+    private void openHotspot() {
+        final SoftApManager.ApConfig desired =
+                apConfig != null ? apConfig.copy() : new SoftApManager.ApConfig();
+        toast(getString(R.string.hotspot_opening));
+        softAp.openHotspot(desired, new SoftApManager.Callback() {
+            public void onStarted(SoftApManager.ApConfig config, String mode) {
+                hotspotUp = true;
+                if (config != null && config.isValid()) apConfig = config;
+                refreshHome();
+                toast(SoftApManager.MODE_SYSTEM.equals(mode)
+                        ? getString(R.string.hotspot_on_system)
+                        : getString(R.string.hotspot_on_local));
             }
 
-            public void onFailed(final String reason) {
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        toast(getString(R.string.hotspot_failed, reason));
-                    }
-                });
+            public void onFailed(String reason) {
+                hotspotUp = softAp.isHotspotUp();
+                refreshHome();
+                showHotspotFailedDialog(reason);
             }
         });
     }
@@ -1347,6 +1561,7 @@ public class MainActivity extends Activity {
         statUnit.setText("GB");
         countBadge.setText(String.valueOf(count));
         devAddrValue.setText(addressText());
+        apDetail.setText(apDetailText());
 
         boolean live = linked || hotspotUp;
         statusDot.setBackground(MiuixTheme.rounded(
@@ -1373,16 +1588,16 @@ public class MainActivity extends Activity {
         if (live) {
             payload = qrMode == 0
                     ? SoftApManager.wifiQrPayload(apConfig)
-                    : "http://" + SoftApManager.getPreferredIp() + ":" + SERVER_PORT;
+                    : "http://" + SoftApManager.getApIp() + ":" + SERVER_PORT;
         }
         if (payload == null || payload.length() == 0) {
             qrSlot.addView(placeholderCard());
             return;
         }
-        if (qrView == null) qrView = new MiuixQrView(this, QR_SIZE);
+        qrView = new MiuixQrView(this, qrSize);
         qrView.setContent(payload);
         qrSlot.addView(qrView, new FrameLayout.LayoutParams(
-                dp(QR_SIZE), dp(QR_SIZE), Gravity.CENTER));
+                dp(qrSize), dp(qrSize), Gravity.CENTER));
     }
 
     private View placeholderCard() {
@@ -1392,7 +1607,7 @@ public class MainActivity extends Activity {
                 MiuixTheme.colors().outline, dp(24f), dp(1f)));
         ph.setGravity(Gravity.CENTER);
         ph.setLayoutParams(new FrameLayout.LayoutParams(
-                dp(QR_SIZE), dp(QR_SIZE), Gravity.CENTER));
+                dp(qrSize), dp(qrSize), Gravity.CENTER));
 
         View icon = new View(this) {
             @Override
@@ -1433,9 +1648,17 @@ public class MainActivity extends Activity {
     }
 
     private String addressText() {
-        String ip = SoftApManager.getPreferredIp();
+        String ip = SoftApManager.getApIp();
         if (ip == null) ip = "0.0.0.0";
         return ip + " : " + SERVER_PORT;
+    }
+
+    private String apDetailText() {
+        if (apConfig == null || !apConfig.isValid()) {
+            return getString(R.string.ap_unknown);
+        }
+        return getString(R.string.ap_detail, apConfig.ssid,
+                apConfig.isOpen() ? getString(R.string.ap_open) : apConfig.passphrase);
     }
 
     private final Runnable adbPoll = new Runnable() {
@@ -1443,9 +1666,18 @@ public class MainActivity extends Activity {
             new Thread(new Runnable() {
                 public void run() {
                     final AdbManager.AdbStatus s = AdbManager.query();
+                    final boolean ap = softAp.isHotspotUp();
                     ui.post(new Runnable() {
                         public void run() {
                             applyAdbStatus(s);
+                            if (ap != hotspotUp) {
+                                hotspotUp = ap;
+                                SoftApManager.ApConfig live = softAp.liveConfig();
+                                if (live != null && live.isValid()) apConfig = live;
+                                refreshHome();
+                            } else if (ap && currentPage == PAGE_HOME) {
+                                devAddrValue.setText(addressText());
+                            }
                         }
                     });
                 }
@@ -1468,6 +1700,7 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- infra
 
     private void startServer() {
+        if (server != null) return;
         server = new HttpFileServer(SERVER_PORT, repo, readAsset("upload.html"),
                 getString(R.string.device_car));
         server.addListener(new HttpFileServer.ReceiveListener() {

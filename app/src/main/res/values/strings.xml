@@ -4,7 +4,6 @@
 
     <!-- top bar -->
     <string name="app_title">文件互传</string>
-    <string name="device_self">本机 · 车机</string>
     <string name="device_car">车机</string>
     <string name="device_phone">手机</string>
     <string name="device_name_value">设备名称　车机</string>
@@ -14,6 +13,33 @@
     <string name="adb_idle">ADB 未连接</string>
     <string name="adb_listening">ADB 待连接</string>
     <string name="adb_connected">ADB 已连接 · %1$s</string>
+    <string name="adb_title">ADB 连接状态</string>
+    <string name="adb_daemon">adbd 守护进程</string>
+    <string name="adb_state_running">运行中</string>
+    <string name="adb_state_stopped">未运行</string>
+    <string name="adb_port_label">TCP 端口</string>
+    <string name="adb_listen_label">端口监听</string>
+    <string name="adb_yes">已监听</string>
+    <string name="adb_no">未监听</string>
+    <string name="adb_clients_label">已连接客户端</string>
+    <string name="adb_client_none">暂无</string>
+    <string name="adb_enable_tcp">开启网络调试（5555）</string>
+    <string name="adb_enable_tip">需系统权限；若无权限请在「开发者选项 · 网络调试」中手动开启。</string>
+
+    <!-- hotspot -->
+    <string name="open_hotspot">打开热点</string>
+    <string name="close_hotspot">关闭热点</string>
+    <string name="hotspot_opening">正在打开设备热点…</string>
+    <string name="hotspot_on_system">已开启系统热点</string>
+    <string name="hotspot_on_local">已开启本机热点（应用托管）</string>
+    <string name="hotspot_off">热点已关闭</string>
+    <string name="hotspot_failed_title">热点开启失败</string>
+    <string name="hotspot_failed">%1$s</string>
+    <string name="open_ap_settings">打开系统热点设置</string>
+    <string name="no_settings">无法打开设置页</string>
+    <string name="ap_detail">热点 %1$s · 密码 %2$s</string>
+    <string name="ap_unknown">未读取到车机热点配置</string>
+    <string name="ap_open">无密码</string>
 
     <!-- transfer home -->
     <string name="qr_wait_title">等待连接后生成二维码</string>
@@ -28,8 +54,6 @@
     <string name="status_no_device">暂无设备连接</string>
     <string name="status_ready">已就绪</string>
     <string name="status_waiting_desc">等待手机扫码连接</string>
-    <string name="open_hotspot">打开热点</string>
-    <string name="close_hotspot">关闭热点</string>
     <string name="stat_received">已接收文件</string>
     <string name="stat_unit_files">个文件</string>
     <string name="stat_space">已占用空间</string>
@@ -84,10 +108,9 @@
     <string name="cancel">取消</string>
     <string name="ok">好的</string>
 
-    <!-- hotspot -->
-    <string name="hotspot_failed">热点启动失败：%1$s</string>
+    <!-- manual ap config -->
     <string name="ap_manual_title">指定热点账号密码</string>
-    <string name="ap_manual_desc">系统热点配置读取受限，请填写车机原本的热点名称与密码，用于生成连接二维码。</string>
+    <string name="ap_manual_desc">系统热点配置读取受限，请填写车机原本的热点名称与密码，用于开启热点并生成连接二维码。</string>
     <string name="ap_ssid_label">热点名称</string>
     <string name="ap_ssid_hint">例如 CarHotspot</string>
     <string name="ap_pass_label">热点密码</string>

@@ -1,32 +1,65 @@
 package com.zsb.carfiletransfer;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 /**
  * Wi-Fi hotspot helpers.
  *
- * Two modes are supported:
- * 1. The car unit's own hotspot - its original SSID / password are read from the
- *    system configuration so the QR code matches what the driver already knows.
- * 2. A local-only hotspot created by the app (Android 8+), used as a fallback
- *    when the system configuration cannot be read or the system hotspot is off.
+ * <p>The car unit's <em>own</em> hotspot is the primary path: its saved SSID /
+ * password are read from the system configuration so the generated QR code
+ * matches the access point the driver already knows. Opening it requires
+ * privileged APIs, therefore {@link #openHotspot} walks a strategy chain from
+ * the most native to the least:</p>
+ *
+ * <ol>
+ *   <li>{@code ConnectivityManager#startTethering} - real system tethering</li>
+ *   <li>{@code WifiManager#startSoftAp} - system soft AP (Android 11+)</li>
+ *   <li>{@code WifiManager#setWifiApEnabled} - legacy soft AP</li>
+ *   <li>{@code WifiManager#startLocalOnlyHotspotWithConfiguration} - app owned
+ *       AP that still uses the car unit's credentials (Android 13+)</li>
+ *   <li>{@code WifiManager#startLocalOnlyHotspot} - app owned AP, random SSID</li>
+ * </ol>
+ *
+ * <p>Everything outside the public SDK is reached reflectively and every step
+ * is guarded, so a missing permission degrades to the next strategy instead of
+ * crashing.</p>
  */
 public class SoftApManager {
 
     private static final String TAG = "SoftApManager";
+
+    /** How the access point was brought up. */
+    public static final String MODE_SYSTEM = "system";
+    public static final String MODE_LOCAL = "local";
+
+    /** WifiManager soft AP states. */
+    public static final int AP_STATE_DISABLING = 10;
+    public static final int AP_STATE_DISABLED = 11;
+    public static final int AP_STATE_ENABLING = 12;
+    public static final int AP_STATE_ENABLED = 13;
+    public static final int AP_STATE_FAILED = 14;
+
+    /** ConnectivityManager#TETHERING_WIFI. */
+    private static final int TETHERING_WIFI = 0;
+    /** SoftApConfiguration#SECURITY_TYPE_WPA2_PSK. */
+    private static final int SECURITY_WPA2_PSK = 1;
 
     /** Access point credentials. */
     public static final class ApConfig {
@@ -36,6 +69,8 @@ public class SoftApManager {
         /** true when the credentials come from the car unit's saved configuration. */
         public boolean fromSystem;
         public boolean active;
+        /** how the AP was started. */
+        public String mode = MODE_SYSTEM;
 
         public boolean isValid() {
             return ssid != null && ssid.length() > 0;
@@ -44,16 +79,28 @@ public class SoftApManager {
         public boolean isOpen() {
             return passphrase == null || passphrase.length() == 0;
         }
+
+        public ApConfig copy() {
+            ApConfig c = new ApConfig();
+            c.ssid = ssid;
+            c.passphrase = passphrase;
+            c.security = security;
+            c.fromSystem = fromSystem;
+            c.active = active;
+            c.mode = mode;
+            return c;
+        }
     }
 
     public interface Callback {
-        void onStarted(ApConfig config);
+        void onStarted(ApConfig config, String mode);
 
         void onFailed(String reason);
     }
 
     private final Context ctx;
     private final WifiManager wifi;
+    private final Handler main = new Handler(Looper.getMainLooper());
     private WifiManager.LocalOnlyHotspotReservation reservation;
 
     public SoftApManager(Context ctx) {
@@ -175,57 +222,390 @@ public class SoftApManager {
         }
     }
 
-    // ---------------- local-only hotspot ----------------
+    // ---------------- state ----------------
+
+    /** WifiManager#getWifiApState() (hidden). */
+    public int getApState() {
+        if (wifi == null) return AP_STATE_DISABLED;
+        try {
+            Method m = wifi.getClass().getMethod("getWifiApState");
+            Object v = m.invoke(wifi);
+            return v instanceof Integer ? ((Integer) v).intValue() : AP_STATE_DISABLED;
+        } catch (Throwable t) {
+            Log.i(TAG, "getWifiApState unavailable: " + t);
+            return AP_STATE_DISABLED;
+        }
+    }
+
+    public boolean isSystemApEnabled() {
+        return getApState() == AP_STATE_ENABLED;
+    }
 
     public boolean hasReservation() {
         return reservation != null;
     }
 
-    public void startLocalOnly(final Callback cb) {
+    /** True when any access point owned by the device is up. */
+    public boolean isHotspotUp() {
+        return hasReservation() || isSystemApEnabled();
+    }
+
+    /** Live credentials, preferring the running reservation. */
+    public ApConfig liveConfig() {
+        if (reservation != null) {
+            try {
+                Object c = reservation.getSoftApConfiguration();
+                if (c != null) {
+                    ApConfig out = new ApConfig();
+                    out.ssid = invokeString(c, "getSsid");
+                    out.passphrase = invokeString(c, "getPassphrase");
+                    out.mode = MODE_LOCAL;
+                    out.active = true;
+                    if (out.isValid()) {
+                        if (out.isOpen()) out.security = "nopass";
+                        return out;
+                    }
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "read reservation config", t);
+            }
+        }
+        ApConfig sys = readSystemConfig();
+        if (sys != null) {
+            sys.active = isSystemApEnabled();
+            sys.mode = MODE_SYSTEM;
+            return sys;
+        }
+        return null;
+    }
+
+    // ---------------- opening the device hotspot ----------------
+
+    /**
+     * Open the device hotspot with the given credentials. Always reports through
+     * the callback, on the calling (main) thread.
+     */
+    public void openHotspot(final ApConfig desired, final Callback cb) {
+        if (isHotspotUp()) {
+            ApConfig live = liveConfig();
+            if (live != null && live.isValid()) {
+                reportStarted(cb, live, live.mode);
+                return;
+            }
+            reportStarted(cb, desired, MODE_SYSTEM);
+            return;
+        }
+
+        if (tryStartTethering()) {
+            waitForAp(desired, cb, MODE_SYSTEM);
+            return;
+        }
+        if (tryStartSoftAp(desired)) {
+            waitForAp(desired, cb, MODE_SYSTEM);
+            return;
+        }
+        if (tryLegacySetWifiApEnabled(desired)) {
+            waitForAp(desired, cb, MODE_SYSTEM);
+            return;
+        }
+        startLocalOnlyWithConfig(desired, cb);
+    }
+
+    private void reportStarted(final Callback cb, final ApConfig cfg, final String mode) {
+        main.post(new Runnable() {
+            public void run() {
+                if (cfg != null) {
+                    cfg.active = true;
+                    cfg.mode = mode;
+                }
+                cb.onStarted(cfg, mode);
+            }
+        });
+    }
+
+    private void reportFailed(final Callback cb, final String reason) {
+        main.post(new Runnable() {
+            public void run() {
+                cb.onFailed(reason);
+            }
+        });
+    }
+
+    /** ConnectivityManager#startTethering - the real system hotspot. */
+    private boolean tryStartTethering() {
+        ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        Class<?> cbCls = null;
+        try {
+            cbCls = Class.forName("android.net.ConnectivityManager$OnStartTetheringCallback");
+        } catch (Throwable t) {
+            Log.i(TAG, "OnStartTetheringCallback missing: " + t);
+        }
+        // Android 10+: startTethering(int, boolean, Executor, OnStartTetheringCallback)
+        if (cbCls != null) {
+            try {
+                Method m = cm.getClass().getMethod("startTethering", int.class, boolean.class,
+                        Executor.class, cbCls);
+                m.invoke(cm, TETHERING_WIFI, false, directExecutor(), tetheringCallback(cbCls));
+                Log.i(TAG, "startTethering (executor) invoked");
+                return true;
+            } catch (Throwable t) {
+                Log.i(TAG, "startTethering(executor) unavailable: " + t);
+            }
+        }
+        // Android 7-9: startTethering(int, boolean, OnStartTetheringCallback, Handler)
+        if (cbCls != null) {
+            try {
+                Method m = cm.getClass().getMethod("startTethering", int.class, boolean.class,
+                        cbCls, Handler.class);
+                m.invoke(cm, TETHERING_WIFI, false, tetheringCallback(cbCls), main);
+                Log.i(TAG, "startTethering (handler) invoked");
+                return true;
+            } catch (Throwable t) {
+                Log.i(TAG, "startTethering(handler) unavailable: " + t);
+            }
+        }
+        return false;
+    }
+
+    private Object tetheringCallback(Class<?> cbCls) {
+        if (!cbCls.isInterface()) return null;
+        try {
+            return Proxy.newProxyInstance(cbCls.getClassLoader(), new Class<?>[]{cbCls},
+                    new InvocationHandler() {
+                        public Object invoke(Object proxy, Method method, Object[] args) {
+                            Log.i(TAG, "tethering callback: " + method.getName());
+                            return null;
+                        }
+                    });
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private Executor directExecutor() {
+        return new Executor() {
+            public void execute(Runnable command) {
+                command.run();
+            }
+        };
+    }
+
+    /** WifiManager#startSoftAp(SoftApConfiguration) - Android 11+, hidden. */
+    private boolean tryStartSoftAp(ApConfig desired) {
+        if (wifi == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
+        Object sac = buildSoftApConfiguration(desired);
+        if (sac == null) return false;
+        try {
+            Method m = wifi.getClass().getMethod("startSoftAp",
+                    Class.forName("android.net.wifi.SoftApConfiguration"));
+            m.invoke(wifi, sac);
+            Log.i(TAG, "startSoftAp invoked");
+            return true;
+        } catch (Throwable t) {
+            Log.i(TAG, "startSoftAp unavailable: " + t);
+            return false;
+        }
+    }
+
+    /** Legacy WifiManager#setWifiApEnabled(WifiConfiguration, boolean). */
+    private boolean tryLegacySetWifiApEnabled(ApConfig desired) {
+        if (wifi == null || desired == null || !desired.isValid()) return false;
+        try {
+            Class<?> wcCls = Class.forName("android.net.wifi.WifiConfiguration");
+            Object wc = wcCls.newInstance();
+            setField(wc, "SSID", "\"" + desired.ssid + "\"");
+            if (!desired.isOpen()) {
+                setField(wc, "preSharedKey", "\"" + desired.passphrase + "\"");
+            }
+            setField(wc, "hiddenSSID", Boolean.FALSE);
+            Method m = wifi.getClass().getMethod("setWifiApEnabled", wcCls, boolean.class);
+            Object r = m.invoke(wifi, wc, Boolean.TRUE);
+            if (r instanceof Boolean && !((Boolean) r).booleanValue()) return false;
+            Log.i(TAG, "setWifiApEnabled invoked");
+            return true;
+        } catch (Throwable t) {
+            Log.i(TAG, "setWifiApEnabled unavailable: " + t);
+            return false;
+        }
+    }
+
+    private void setField(Object target, String name, Object value) {
+        try {
+            java.lang.reflect.Field f = target.getClass().getField(name);
+            f.set(target, value);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Build a public {@code SoftApConfiguration} from an {@link ApConfig}. */
+    private Object buildSoftApConfiguration(ApConfig cfg) {
+        if (cfg == null || !cfg.isValid()) return null;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null;
+        try {
+            Class<?> bCls = Class.forName("android.net.wifi.SoftApConfiguration$Builder");
+            Object b = bCls.getConstructor().newInstance();
+            Object r = bCls.getMethod("setSsid", String.class).invoke(b, cfg.ssid);
+            if (r != null) b = r;
+            if (!cfg.isOpen() && cfg.passphrase != null && cfg.passphrase.length() >= 8) {
+                r = bCls.getMethod("setPassphrase", String.class, int.class)
+                        .invoke(b, cfg.passphrase, SECURITY_WPA2_PSK);
+                if (r != null) b = r;
+            }
+            return b.getClass().getMethod("build").invoke(b);
+        } catch (Throwable t) {
+            Log.i(TAG, "build SoftApConfiguration failed: " + t);
+            return null;
+        }
+    }
+
+    /** Wait until the system soft AP reports ENABLED, then report. */
+    private void waitForAp(final ApConfig desired, final Callback cb, final String mode) {
+        new Thread(new Runnable() {
+            public void run() {
+                boolean up = false;
+                for (int i = 0; i < 24; i++) {
+                    if (isSystemApEnabled()) {
+                        up = true;
+                        break;
+                    }
+                    try {
+                        Thread.sleep(500L);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+                if (up) {
+                    ApConfig live = liveConfig();
+                    if (live == null || !live.isValid()) {
+                        live = desired != null ? desired.copy() : new ApConfig();
+                    }
+                    final ApConfig out = live;
+                    reportStarted(cb, out, mode);
+                } else {
+                    reportFailed(cb, "系统热点未开启（缺少系统权限）");
+                }
+            }
+        }).start();
+    }
+
+    // ---------------- local-only hotspot ----------------
+
+    /** App owned AP that keeps the car unit's credentials when possible. */
+    private void startLocalOnlyWithConfig(final ApConfig desired, final Callback cb) {
         if (wifi == null) {
-            cb.onFailed("WIFI_SERVICE 不可用");
+            reportFailed(cb, "WIFI_SERVICE 不可用");
             return;
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            cb.onFailed("系统版本过低（需 Android 8+）");
+            reportFailed(cb, "系统版本过低（需 Android 8+）");
             return;
         }
-        final Handler h = new Handler(Looper.getMainLooper());
-        try {
-            wifi.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
-                @Override
-                public void onStarted(WifiManager.LocalOnlyHotspotReservation res) {
-                    reservation = res;
-                    ApConfig cfg = new ApConfig();
-                    try {
-                        Object c = res.getSoftApConfiguration();
-                        cfg.ssid = invokeString(c, "getSsid");
-                        cfg.passphrase = invokeString(c, "getPassphrase");
-                    } catch (Throwable t) {
-                        Log.w(TAG, "read reservation config", t);
-                    }
-                    if (!cfg.isValid()) {
-                        ApConfig sys = readSystemConfig();
-                        if (sys != null) {
-                            cfg.ssid = sys.ssid;
-                            cfg.passphrase = sys.passphrase;
-                            cfg.fromSystem = true;
-                        }
-                    }
-                    if (cfg.isOpen()) cfg.security = "nopass";
-                    cfg.active = true;
-                    cb.onStarted(cfg);
-                }
+        Object sac = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            sac = buildSoftApConfiguration(desired);
+        }
+        if (sac != null) {
+            try {
+                Method m = wifi.getClass().getMethod("startLocalOnlyHotspotWithConfiguration",
+                        Class.forName("android.net.wifi.SoftApConfiguration"), Executor.class,
+                        WifiManager.LocalOnlyHotspotCallback.class);
+                m.invoke(wifi, sac, directExecutor(), localCallback(cb));
+                Log.i(TAG, "startLocalOnlyHotspotWithConfiguration invoked");
+                return;
+            } catch (Throwable t) {
+                Log.i(TAG, "startLocalOnlyHotspotWithConfiguration unavailable: " + t);
+            }
+        }
+        startLocalOnly(cb);
+    }
 
-                @Override
-                public void onFailed(int reason) {
-                    cb.onFailed("热点启动失败（code=" + reason + "）");
-                }
-            }, h);
+    public void startLocalOnly(final Callback cb) {
+        if (wifi == null) {
+            reportFailed(cb, "WIFI_SERVICE 不可用");
+            return;
+        }
+        try {
+            wifi.startLocalOnlyHotspot(localCallback(cb), main);
         } catch (SecurityException se) {
-            cb.onFailed("缺少定位 / Wi-Fi 权限");
-        } catch (Exception e) {
-            cb.onFailed(String.valueOf(e.getMessage()));
+            reportFailed(cb, "缺少定位 / Wi-Fi 权限");
+        } catch (Throwable t) {
+            reportFailed(cb, String.valueOf(t.getMessage()));
+        }
+    }
+
+    private WifiManager.LocalOnlyHotspotCallback localCallback(final Callback cb) {
+        return new WifiManager.LocalOnlyHotspotCallback() {
+            @Override
+            public void onStarted(WifiManager.LocalOnlyHotspotReservation res) {
+                reservation = res;
+                ApConfig cfg = new ApConfig();
+                try {
+                    Object c = res.getSoftApConfiguration();
+                    cfg.ssid = invokeString(c, "getSsid");
+                    cfg.passphrase = invokeString(c, "getPassphrase");
+                } catch (Throwable t) {
+                    Log.w(TAG, "read reservation config", t);
+                }
+                if (!cfg.isValid()) {
+                    ApConfig sys = readSystemConfig();
+                    if (sys != null) {
+                        cfg.ssid = sys.ssid;
+                        cfg.passphrase = sys.passphrase;
+                        cfg.fromSystem = true;
+                    }
+                }
+                if (cfg.isOpen()) cfg.security = "nopass";
+                cfg.mode = MODE_LOCAL;
+                reportStarted(cb, cfg, MODE_LOCAL);
+            }
+
+            @Override
+            public void onFailed(int reason) {
+                reportFailed(cb, "热点启动失败（code=" + reason + "）");
+            }
+
+            @Override
+            public void onStopped() {
+                reservation = null;
+            }
+        };
+    }
+
+    // ---------------- closing ----------------
+
+    public void closeHotspot() {
+        if (reservation != null) {
+            stopLocalOnly();
+        }
+        if (wifi != null) {
+            try {
+                Method m = wifi.getClass().getMethod("stopSoftAp");
+                m.invoke(wifi);
+                Log.i(TAG, "stopSoftAp invoked");
+                return;
+            } catch (Throwable t) {
+                Log.i(TAG, "stopSoftAp unavailable: " + t);
+            }
+            try {
+                Method m = wifi.getClass().getMethod("setWifiApEnabled",
+                        Class.forName("android.net.wifi.WifiConfiguration"), boolean.class);
+                m.invoke(wifi, null, Boolean.FALSE);
+                Log.i(TAG, "setWifiApEnabled(false) invoked");
+                return;
+            } catch (Throwable t) {
+                Log.i(TAG, "setWifiApEnabled(false) unavailable: " + t);
+            }
+        }
+        try {
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                Method m = cm.getClass().getMethod("stopTethering", int.class);
+                m.invoke(cm, TETHERING_WIFI);
+                Log.i(TAG, "stopTethering invoked");
+            }
+        } catch (Throwable t) {
+            Log.i(TAG, "stopTethering unavailable: " + t);
         }
     }
 
@@ -287,7 +667,46 @@ public class SoftApManager {
         return out;
     }
 
+    /** Interfaces that usually carry a soft AP. */
+    private static final String[] AP_INTERFACES = {
+            "ap0", "ap1", "swlan0", "softap0", "wlan1", "wl0.1", "wlan0"
+    };
+
+    /**
+     * The address a phone should use to reach this device. Prefers the address
+     * bound to the access point interface so the QR stays correct when the unit
+     * is simultaneously joined to another Wi-Fi network.
+     */
+    public static String getApIp() {
+        for (String name : AP_INTERFACES) {
+            try {
+                NetworkInterface ni = NetworkInterface.getByName(name);
+                if (ni == null || !ni.isUp()) continue;
+                Enumeration<InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress a = addrs.nextElement();
+                    if (a.isLoopbackAddress() || !(a instanceof Inet4Address)) continue;
+                    String ip = a.getHostAddress();
+                    if (ip != null && ip.length() > 0) return ip;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        List<String> all = getIpAddresses();
+        for (String ip : all) {
+            if (ip.startsWith("192.168.43.") || ip.startsWith("192.168.49.")) return ip;
+        }
+        for (String ip : all) {
+            if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
+                return ip;
+            }
+        }
+        return all.isEmpty() ? null : all.get(0);
+    }
+
     public static String getPreferredIp() {
+        String ap = getApIp();
+        if (ap != null) return ap;
         List<String> all = getIpAddresses();
         for (String ip : all) {
             if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
