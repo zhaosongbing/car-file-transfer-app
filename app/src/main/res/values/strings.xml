@@ -29,7 +29,10 @@
     <!-- hotspot -->
     <string name="open_hotspot">打开热点</string>
     <string name="close_hotspot">关闭热点</string>
-    <string name="hotspot_opening">正在打开设备热点…</string>
+    <string name="hotspot_opening">正在打开…</string>
+    <string name="hotspot_closing">正在关闭…</string>
+    <string name="hotspot_close_failed_title">热点关闭失败</string>
+    <string name="need_location_for_ap">创建热点需要定位权限，请在弹窗中允许</string>
     <string name="hotspot_on_system">已开启系统热点</string>
     <string name="hotspot_on_local">已开启本机热点（应用托管）</string>
     <string name="hotspot_off">热点已关闭</string>

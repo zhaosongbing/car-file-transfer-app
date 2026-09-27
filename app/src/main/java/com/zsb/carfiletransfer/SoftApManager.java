@@ -245,9 +245,42 @@ public class SoftApManager {
         return reservation != null;
     }
 
-    /** True when any access point owned by the device is up. */
+    /**
+     * Interfaces that only carry a soft AP (never the station interface), so an
+     * up interface with an IPv4 address is a strong signal that a hotspot is
+     * running - even when the platform hides {@code getWifiApState()} behind
+     * the non-SDK interface ban.
+     */
+    private static final String[] AP_ONLY_INTERFACES = {
+            "ap0", "ap1", "swlan0", "softap0", "wlan1", "wl0.1"
+    };
+
+    /** Permission-free, reflection-free hotspot detection via the AP interface. */
+    public static boolean isApInterfaceUp() {
+        for (String name : AP_ONLY_INTERFACES) {
+            try {
+                NetworkInterface ni = NetworkInterface.getByName(name);
+                if (ni == null || !ni.isUp()) continue;
+                Enumeration<InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress a = addrs.nextElement();
+                    if (a.isLoopbackAddress() || !(a instanceof Inet4Address)) continue;
+                    String ip = a.getHostAddress();
+                    if (ip != null && ip.length() > 0) return true;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True when any access point owned by the device is up. Combines the three
+     * independent signals so a hotspot started by the user in system settings is
+     * detected as well as one this app owns.
+     */
     public boolean isHotspotUp() {
-        return hasReservation() || isSystemApEnabled();
+        return hasReservation() || isSystemApEnabled() || isApInterfaceUp();
     }
 
     /** Live credentials, preferring the running reservation. */
@@ -296,18 +329,26 @@ public class SoftApManager {
             return;
         }
 
+        boolean hasCreds = desired != null && desired.isValid();
+
+        // 1 - real system tethering (privileged, works on system-signed builds)
         if (tryStartTethering()) {
             waitForAp(desired, cb, MODE_SYSTEM);
             return;
         }
-        if (tryStartSoftAp(desired)) {
+        // 2 - system soft AP with the car unit's own credentials
+        if (hasCreds && tryStartSoftAp(desired)) {
             waitForAp(desired, cb, MODE_SYSTEM);
             return;
         }
-        if (tryLegacySetWifiApEnabled(desired)) {
+        // 3 - legacy soft AP
+        if (hasCreds && tryLegacySetWifiApEnabled(desired)) {
             waitForAp(desired, cb, MODE_SYSTEM);
             return;
         }
+        // 4 - app owned hotspot: still uses the car unit's credentials when the
+        //     platform allows it, otherwise a generated pair (reported back so
+        //     the QR code always matches the live access point)
         startLocalOnlyWithConfig(desired, cb);
     }
 
@@ -459,13 +500,16 @@ public class SoftApManager {
         }
     }
 
-    /** Wait until the system soft AP reports ENABLED, then report. */
+    /**
+     * Poll until any hotspot signal turns on. Uses all three detection paths so
+     * a hotspot brought up outside this app is recognised too.
+     */
     private void waitForAp(final ApConfig desired, final Callback cb, final String mode) {
         new Thread(new Runnable() {
             public void run() {
                 boolean up = false;
                 for (int i = 0; i < 24; i++) {
-                    if (isSystemApEnabled()) {
+                    if (isSystemApEnabled() || isApInterfaceUp()) {
                         up = true;
                         break;
                     }
@@ -562,7 +606,22 @@ public class SoftApManager {
 
             @Override
             public void onFailed(int reason) {
-                reportFailed(cb, "热点启动失败（code=" + reason + "）");
+                String hint;
+                switch (reason) {
+                    case 1:      // ERROR_GENERIC
+                        hint = "热点启动失败：系统拒绝创建接入点，请确认已授予定位权限并打开位置信息";
+                        break;
+                    case 2:      // ERROR_INCOMPATIBLE_MODE
+                        hint = "热点启动失败：当前 Wi-Fi 模式不兼容（请先关闭 Wi-Fi 或已有的网络共享）";
+                        break;
+                    case 3:      // ERROR_TETHERING_DISALLOWED
+                        hint = "热点启动失败：系统策略禁止创建热点";
+                        break;
+                    default:
+                        hint = "热点启动失败（code=" + reason + "）";
+                        break;
+                }
+                reportFailed(cb, hint);
             }
 
             @Override
@@ -574,39 +633,81 @@ public class SoftApManager {
 
     // ---------------- closing ----------------
 
+    /**
+     * Best-effort close of every hotspot this process can reach: the app owned
+     * reservation first, then the system soft AP, then system tethering.
+     * Never throws.
+     */
     public void closeHotspot() {
         if (reservation != null) {
             stopLocalOnly();
         }
+        boolean handled = false;
         if (wifi != null) {
             try {
                 Method m = wifi.getClass().getMethod("stopSoftAp");
                 m.invoke(wifi);
                 Log.i(TAG, "stopSoftAp invoked");
-                return;
+                handled = true;
             } catch (Throwable t) {
                 Log.i(TAG, "stopSoftAp unavailable: " + t);
             }
+            if (!handled) {
+                try {
+                    Method m = wifi.getClass().getMethod("setWifiApEnabled",
+                            Class.forName("android.net.wifi.WifiConfiguration"), boolean.class);
+                    m.invoke(wifi, null, Boolean.FALSE);
+                    Log.i(TAG, "setWifiApEnabled(false) invoked");
+                    handled = true;
+                } catch (Throwable t) {
+                    Log.i(TAG, "setWifiApEnabled(false) unavailable: " + t);
+                }
+            }
+        }
+        if (!handled) {
             try {
-                Method m = wifi.getClass().getMethod("setWifiApEnabled",
-                        Class.forName("android.net.wifi.WifiConfiguration"), boolean.class);
-                m.invoke(wifi, null, Boolean.FALSE);
-                Log.i(TAG, "setWifiApEnabled(false) invoked");
-                return;
+                ConnectivityManager cm =
+                        (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    Method m = cm.getClass().getMethod("stopTethering", int.class);
+                    m.invoke(cm, TETHERING_WIFI);
+                    Log.i(TAG, "stopTethering invoked");
+                }
             } catch (Throwable t) {
-                Log.i(TAG, "setWifiApEnabled(false) unavailable: " + t);
+                Log.i(TAG, "stopTethering unavailable: " + t);
             }
         }
-        try {
-            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (cm != null) {
-                Method m = cm.getClass().getMethod("stopTethering", int.class);
-                m.invoke(cm, TETHERING_WIFI);
-                Log.i(TAG, "stopTethering invoked");
+    }
+
+    /**
+     * Close on a worker thread, then re-check with every detection path and
+     * report the outcome. Returns through {@code onStarted} when the hotspot is
+     * really down and {@code onFailed} when the platform keeps it up (a hotspot
+     * owned by the system cannot always be stopped by a third party app).
+     */
+    public void closeHotspotAsync(final Callback cb) {
+        new Thread(new Runnable() {
+            public void run() {
+                closeHotspot();
+                boolean down = false;
+                for (int i = 0; i < 8; i++) {
+                    if (!isHotspotUp()) {
+                        down = true;
+                        break;
+                    }
+                    try {
+                        Thread.sleep(400L);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+                if (down) {
+                    reportStarted(cb, null, MODE_SYSTEM);
+                } else {
+                    reportFailed(cb, "系统热点由系统托管，应用无法直接关闭");
+                }
             }
-        } catch (Throwable t) {
-            Log.i(TAG, "stopTethering unavailable: " + t);
-        }
+        }).start();
     }
 
     public void stopLocalOnly() {

@@ -68,6 +68,8 @@ public class MainActivity extends Activity {
     private static final float QR_SIZE_DRAFT = 300f;
     private static final float GAP_MAIN_DRAFT = 40f;
     private static final float GAP_CARD_DRAFT = 20f;
+    /** Design draft "文件列表区" gap between list rows. */
+    private static final float ROW_GAP_DRAFT = 12f;
 
     private static final float R_QR_CARD = 32f;
     private static final float R_CARD = 24f;
@@ -79,6 +81,7 @@ public class MainActivity extends Activity {
     private static final int SERVER_PORT = 8899;
     private static final String PREF = "carfile";
     private static final int REQ_PERMISSIONS = 2101;
+    private static final int REQ_LOCATION = 2102;
 
     private static final int PAGE_HOME = 0;
     private static final int PAGE_LIST = 1;
@@ -132,6 +135,8 @@ public class MainActivity extends Activity {
     private SoftApManager softAp;
     private SoftApManager.ApConfig apConfig;
     private boolean hotspotUp = false;
+    /** Guards the hotspot toggle while an open / close request is in flight. */
+    private boolean hotspotBusy = false;
 
     /** Bridges background transfer events back into the UI thread. */
     private final HttpFileServer.ReceiveListener receiveListener =
@@ -505,6 +510,13 @@ public class MainActivity extends Activity {
                 onHotspotClicked();
             }
         });
+        // long press = force the car unit's own SSID / password by hand
+        btnHotspot.setOnLongClickListener(new View.OnLongClickListener() {
+            public boolean onLongClick(View v) {
+                showManualConfigDialog();
+                return true;
+            }
+        });
         status.addView(btnHotspot, wrapContent());
 
         // 2 - statistics row
@@ -699,7 +711,10 @@ public class MainActivity extends Activity {
             String name = o.optString("name");
             String type = o.optString("type");
             if (!matchesFilter(type)) continue;
-            listBox.addView(fileRow(o, name, type), wrapWidth());
+            // design draft "文件列表区": vertical gap 12 between rows
+            LinearLayout.LayoutParams rowLp = wrapWidth();
+            rowLp.topMargin = shown == 0 ? 0 : dp(ROW_GAP_DRAFT);
+            listBox.addView(fileRow(o, name, type), rowLp);
             shown++;
         }
         if (shown == 0) {
@@ -794,7 +809,7 @@ public class MainActivity extends Activity {
             line.setOrientation(LinearLayout.HORIZONTAL);
             line.setGravity(Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams lp = wrapWidth();
-            lp.topMargin = i == 0 ? 0 : dp(12f);
+            lp.topMargin = i == 0 ? 0 : dp(ROW_GAP_DRAFT);
             recentBox.addView(line, lp);
 
             TextView badge = new TextView(this);
@@ -1422,9 +1437,23 @@ public class MainActivity extends Activity {
     }
 
     private void showHotspotFailedDialog(String reason) {
+        showHotspotDialog(getString(R.string.hotspot_failed_title),
+                getString(R.string.hotspot_failed, reason));
+    }
+
+    private void showHotspotCloseFailedDialog(String reason) {
+        showHotspotDialog(getString(R.string.hotspot_close_failed_title),
+                getString(R.string.hotspot_failed, reason));
+    }
+
+    /**
+     * Any hotspot failure ends here: the only path that always works on a
+     * non-system build is the system's own hotspot page, so offer it directly.
+     */
+    private void showHotspotDialog(String title, String message) {
         new MiuixDialog.Builder(this)
-                .setTitle(getString(R.string.hotspot_failed_title))
-                .setMessage(getString(R.string.hotspot_failed, reason))
+                .setTitle(title)
+                .setMessage(message)
                 .setPositive(getString(R.string.open_ap_settings),
                         new MiuixDialog.OnActionListener() {
                             public void onAction(MiuixDialog d) {
@@ -1436,14 +1465,38 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** Open the system hotspot / tethering page, walking every known entry. */
     private void openTetherSettings() {
+        String[] actions = {
+                "android.settings.TETHER_SETTINGS",
+                "com.android.settings.TETHER_SETTINGS",
+                "android.settings.WIFI_AP_SETTINGS"
+        };
+        for (String action : actions) {
+            try {
+                Intent i = new Intent(action);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (i.resolveActivity(getPackageManager()) != null) {
+                    startActivity(i);
+                    return;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                startActivity(new Intent(Settings.Panel.ACTION_WIFI));
+                return;
+            } catch (Exception ignored) {
+            }
+        }
         try {
-            startActivity(new Intent("android.settings.TETHER_SETTINGS"));
+            startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
             return;
         } catch (Exception ignored) {
         }
         try {
-            startActivity(new Intent(Settings.Panel.ACTION_WIFI));
+            startActivity(new Intent(Settings.ACTION_SETTINGS));
         } catch (Exception e) {
             toast(getString(R.string.no_settings));
         }
@@ -1456,32 +1509,50 @@ public class MainActivity extends Activity {
         if (!hotspotUp && connectOption == 0) openHotspot();
     }
 
+    /**
+     * Hotspot toggle. The live state is re-read on every click (the cached flag
+     * can go stale when the user flips the hotspot in the system settings), so
+     * one control both opens and closes the device hotspot.
+     */
     private void onHotspotClicked() {
+        if (hotspotBusy) return;
+        hotspotUp = softAp.isHotspotUp();
         if (hotspotUp) {
-            softAp.closeHotspot();
-            hotspotUp = false;
-            apConfig = softAp.readSystemConfig();
-            if (apConfig == null) apConfig = loadManualConfig();
-            refreshHome();
-            toast(getString(R.string.hotspot_off));
+            closeHotspot();
             return;
         }
-        if (apConfig == null || !apConfig.isValid()) {
-            showManualConfigDialog();
+        if (Build.VERSION.SDK_INT >= 23
+                && !granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    REQ_LOCATION);
+            toast(getString(R.string.need_location_for_ap));
             return;
         }
         openHotspot();
+    }
+
+    private void setHotspotBusy(boolean busy) {
+        hotspotBusy = busy;
+        if (btnHotspot == null) return;
+        btnHotspot.setEnabled(!busy);
+        if (busy) return;
+        btnHotspot.setText(hotspotUp ? getString(R.string.close_hotspot)
+                : getString(R.string.open_hotspot));
     }
 
     /** Open the device hotspot with the car unit's own credentials. */
     private void openHotspot() {
         final SoftApManager.ApConfig desired =
                 apConfig != null ? apConfig.copy() : new SoftApManager.ApConfig();
-        toast(getString(R.string.hotspot_opening));
+        setHotspotBusy(true);
+        if (btnHotspot != null) btnHotspot.setText(getString(R.string.hotspot_opening));
         softAp.openHotspot(desired, new SoftApManager.Callback() {
             public void onStarted(SoftApManager.ApConfig config, String mode) {
                 hotspotUp = true;
-                if (config != null && config.isValid()) apConfig = config;
+                SoftApManager.ApConfig live = config != null && config.isValid()
+                        ? config : softAp.liveConfig();
+                if (live != null && live.isValid()) apConfig = live;
+                setHotspotBusy(false);
                 refreshHome();
                 toast(SoftApManager.MODE_SYSTEM.equals(mode)
                         ? getString(R.string.hotspot_on_system)
@@ -1490,8 +1561,32 @@ public class MainActivity extends Activity {
 
             public void onFailed(String reason) {
                 hotspotUp = softAp.isHotspotUp();
+                setHotspotBusy(false);
                 refreshHome();
                 showHotspotFailedDialog(reason);
+            }
+        });
+    }
+
+    /** Close every hotspot this process can reach, then verify it really went down. */
+    private void closeHotspot() {
+        setHotspotBusy(true);
+        if (btnHotspot != null) btnHotspot.setText(getString(R.string.hotspot_closing));
+        softAp.closeHotspotAsync(new SoftApManager.Callback() {
+            public void onStarted(SoftApManager.ApConfig config, String mode) {
+                hotspotUp = false;
+                apConfig = softAp.readSystemConfig();
+                if (apConfig == null) apConfig = loadManualConfig();
+                setHotspotBusy(false);
+                refreshHome();
+                toast(getString(R.string.hotspot_off));
+            }
+
+            public void onFailed(String reason) {
+                hotspotUp = softAp.isHotspotUp();
+                setHotspotBusy(false);
+                refreshHome();
+                showHotspotCloseFailedDialog(reason);
             }
         });
     }
@@ -1596,8 +1691,10 @@ public class MainActivity extends Activity {
                 : getString(R.string.status_waiting));
         statusSub.setText(live ? getString(R.string.status_waiting_desc)
                 : getString(R.string.status_no_device));
-        btnHotspot.setText(hotspotUp ? getString(R.string.close_hotspot)
-                : getString(R.string.open_hotspot));
+        if (!hotspotBusy) {
+            btnHotspot.setText(hotspotUp ? getString(R.string.close_hotspot)
+                    : getString(R.string.open_hotspot));
+        }
         qrTitle.setText(live ? getString(R.string.qr_ready_title)
                 : getString(R.string.qr_wait_title));
         qrDesc.setText(live ? getString(R.string.qr_ready_desc)
@@ -1815,6 +1912,16 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_LOCATION) {
+            boolean ok = grantResults != null && grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (ok) {
+                openHotspot();
+            } else {
+                toast(getString(R.string.need_location_for_ap));
+            }
+            return;
+        }
         if (requestCode != REQ_PERMISSIONS) return;
         boolean allGranted = true;
         if (grantResults != null) {
