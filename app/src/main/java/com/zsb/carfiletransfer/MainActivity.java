@@ -1,20 +1,26 @@
 package com.zsb.carfiletransfer;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.res.AssetManager;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Paint;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -36,12 +42,12 @@ import com.zsb.carfiletransfer.miuix.MiuixWindowSizeClass;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.InputStream;
 import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -72,6 +78,7 @@ public class MainActivity extends Activity {
 
     private static final int SERVER_PORT = 8899;
     private static final String PREF = "carfile";
+    private static final int REQ_PERMISSIONS = 2101;
 
     private static final int PAGE_HOME = 0;
     private static final int PAGE_LIST = 1;
@@ -123,9 +130,21 @@ public class MainActivity extends Activity {
 
     private FileRepository repo;
     private SoftApManager softAp;
-    private HttpFileServer server;
     private SoftApManager.ApConfig apConfig;
     private boolean hotspotUp = false;
+
+    /** Bridges background transfer events back into the UI thread. */
+    private final HttpFileServer.ReceiveListener receiveListener =
+            new HttpFileServer.ReceiveListener() {
+                public void onFileReceived(final String name, final long size) {
+                    ui.post(new Runnable() {
+                        public void run() {
+                            refreshHome();
+                            if (currentPage == PAGE_LIST) renderList();
+                        }
+                    });
+                }
+            };
     private boolean linked = false;
     private int qrMode = 0;
     private int connectOption = 0;
@@ -141,14 +160,20 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // must run before setContentView: makes the layout draw behind the
+        // system bars, and tells the window how to treat display cut-outs
+        setupWindow();
+
         repo = new FileRepository(this);
         softAp = new SoftApManager(this);
         apConfig = softAp.readSystemConfig();
         if (apConfig == null) apConfig = loadManualConfig();
 
+        startTransferService();
+        requestRuntimePermissions();
+
         buildUi();
         showPage(PAGE_HOME);
-        startServer();
         ui.post(adbPoll);
     }
 
@@ -175,6 +200,7 @@ public class MainActivity extends Activity {
         root.addView(pageDetail, matchParent());
 
         setContentView(root);
+        applySystemBars(root);
 
         hotspotUp = softAp.isHotspotUp();
         refreshHome();
@@ -228,8 +254,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         ui.removeCallbacks(adbPoll);
-        if (server != null) server.stop();
-        softAp.closeHotspot();
+        // deliberately keeps the foreground service and the hotspot alive so the
+        // transfer channel survives rotation / backgrounding
         super.onDestroy();
     }
 
@@ -1699,40 +1725,133 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- infra
 
-    private void startServer() {
-        if (server != null) return;
-        server = new HttpFileServer(SERVER_PORT, repo, readAsset("upload.html"),
-                getString(R.string.device_car));
-        server.addListener(new HttpFileServer.ReceiveListener() {
-            public void onFileReceived(String name, long size) {
-                ui.post(new Runnable() {
-                    public void run() {
-                        refreshHome();
-                        if (currentPage == PAGE_LIST) renderList();
-                    }
-                });
-            }
-        });
-        try {
-            server.start();
-        } catch (Exception e) {
-            toast(getString(R.string.server_failed));
+    private void startTransferService() {
+        TransferService.addListener(receiveListener);
+        TransferService.start(this);
+    }
+
+    // ------------------------------------------------------------ system bars
+
+    /**
+     * Edge-to-edge is enforced for apps targeting SDK 35+, which means the layout
+     * is drawn behind the status / navigation bars. Turn it on explicitly for
+     * older versions too so behaviour is identical everywhere, then let
+     * {@link #applySystemBars} pad every page out of the way of those bars.
+     */
+    private void setupWindow() {
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        if (Build.VERSION.SDK_INT >= 28) {
+            lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        getWindow().setAttributes(lp);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
         }
     }
 
-    private String readAsset(String name) {
-        try {
-            AssetManager am = getAssets();
-            InputStream is = am.open(name);
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
-            is.close();
-            return new String(bos.toByteArray(), "UTF-8");
-        } catch (Exception e) {
-            return "<html><body>upload</body></html>";
+    /** Keeps every page clear of the status bar, gesture bar and display cut-out. */
+    private void applySystemBars(final View root) {
+        root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                int top = 0, left = 0, right = 0, bottom = 0;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    Insets sys = insets.getInsets(WindowInsets.Type.systemBars());
+                    Insets cut = insets.getInsets(WindowInsets.Type.displayCutout());
+                    top = Math.max(sys.top, cut.top);
+                    left = Math.max(sys.left, cut.left);
+                    right = Math.max(sys.right, cut.right);
+                    bottom = Math.max(sys.bottom, cut.bottom);
+                } else {
+                    top = insets.getSystemWindowInsetTop();
+                    left = insets.getSystemWindowInsetLeft();
+                    right = insets.getSystemWindowInsetRight();
+                    bottom = insets.getSystemWindowInsetBottom();
+                }
+                v.setPadding(left, top, right, bottom);
+                return insets;
+            }
+        });
+        root.post(new Runnable() {
+            public void run() {
+                root.requestApplyInsets();
+            }
+        });
+    }
+
+    // ------------------------------------------------------------ permissions
+
+    private void requestRuntimePermissions() {
+        List<String> missing = new ArrayList<String>();
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (!granted(Manifest.permission.POST_NOTIFICATIONS)) {
+                missing.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
+            if (!granted(Manifest.permission.NEARBY_WIFI_DEVICES)) {
+                missing.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+            }
         }
+        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            missing.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (!granted(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+            missing.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
+        if (!missing.isEmpty()) {
+            requestPermissions(missing.toArray(new String[0]), REQ_PERMISSIONS);
+        } else {
+            maybeAskBatteryExemption();
+        }
+    }
+
+    private boolean granted(String permission) {
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_PERMISSIONS) return;
+        boolean allGranted = true;
+        if (grantResults != null) {
+            for (int r : grantResults) {
+                if (r != PackageManager.PERMISSION_GRANTED) allGranted = false;
+            }
+        }
+        if (!allGranted) toast(getString(R.string.perm_missing));
+        maybeAskBatteryExemption();
+    }
+
+    /** Whitelisting from battery optimisation keeps the service alive on screen-off. */
+    private void maybeAskBatteryExemption() {
+        if (Build.VERSION.SDK_INT < 23) return;
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+
+        new MiuixDialog.Builder(this)
+                .setTitle(getString(R.string.battery_opt_title))
+                .setMessage(getString(R.string.battery_opt_message))
+                .setPositive(getString(R.string.battery_opt_confirm),
+                        new MiuixDialog.OnActionListener() {
+                            public void onAction(MiuixDialog d) {
+                                d.dismiss();
+                                try {
+                                    Intent i = new Intent(
+                                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                                    i.setData(android.net.Uri.parse(
+                                            "package:" + getPackageName()));
+                                    startActivity(i);
+                                } catch (Exception e) {
+                                    toast(getString(R.string.no_settings));
+                                }
+                            }
+                        })
+                .setNegative(getString(R.string.cancel), null)
+                .show();
     }
 
     private SharedPreferences prefs() {

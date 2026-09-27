@@ -6,12 +6,14 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLEncoder;
 import java.net.URLDecoder;
 import java.util.HashMap;
 import java.util.Locale;
@@ -21,15 +23,24 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Minimal dependency-free HTTP server.
- *   GET  /            -> the phone-side upload page (H5)
- *   GET  /info        -> {"device":..., "free":...}
- *   GET  /files       -> JSON array of received files
- *   POST /upload?name -> raw body saved to storage
+ * Minimal dependency-free HTTP server. Both transfer directions are served from
+ * the same end point that the QR code points at:
+ *
+ * <pre>
+ *   GET  /              -> the phone-side portal page (H5)
+ *   GET  /info          -> {"device":..., "free":...}
+ *   GET  /files         -> JSON array of the files stored on this device
+ *   GET  /download?name -> the file itself (accepts Range)
+ *   POST /upload?name   -> raw body saved to storage
+ * </pre>
  */
 public class HttpFileServer {
 
     private static final String TAG = "HttpFileServer";
+
+    public static final int DEFAULT_PORT = 8899;
+
+    private static final int BUFFER = 32768;
 
     public interface ReceiveListener {
         void onFileReceived(String name, long size);
@@ -37,7 +48,7 @@ public class HttpFileServer {
 
     private final int port;
     private final FileRepository repo;
-    private final String uploadPage;
+    private final String portalPage;
     private final String deviceName;
     private final CopyOnWriteArrayList<ReceiveListener> listeners = new CopyOnWriteArrayList<ReceiveListener>();
 
@@ -45,10 +56,10 @@ public class HttpFileServer {
     private ExecutorService pool;
     private volatile boolean running = false;
 
-    public HttpFileServer(int port, FileRepository repo, String uploadPage, String deviceName) {
+    public HttpFileServer(int port, FileRepository repo, String portalPage, String deviceName) {
         this.port = port;
         this.repo = repo;
-        this.uploadPage = uploadPage;
+        this.portalPage = portalPage;
         this.deviceName = deviceName;
     }
 
@@ -86,6 +97,10 @@ public class HttpFileServer {
         return running;
     }
 
+    public int getPort() {
+        return port;
+    }
+
     private void acceptLoop() {
         while (running) {
             try {
@@ -100,6 +115,8 @@ public class HttpFileServer {
             }
         }
     }
+
+    // ---------------------------------------------------------------- routing
 
     private void handle(Socket sock) {
         try {
@@ -130,40 +147,44 @@ public class HttpFileServer {
                 query = target.substring(q + 1);
             }
 
-            if ("GET".equalsIgnoreCase(method)) {
+            boolean head = "HEAD".equalsIgnoreCase(method);
+
+            if ("GET".equalsIgnoreCase(method) || head) {
                 if (path.equals("/info")) {
                     JSONObject o = new JSONObject();
                     try {
                         o.put("device", deviceName);
                         o.put("free", repo.getDir().getFreeSpace());
+                        o.put("direction", "bidirectional");
                     } catch (Exception ignored) {
                     }
-                    json(sock, o.toString());
+                    writeResponse(sock, 200, "OK", "application/json; charset=utf-8",
+                            o.toString().getBytes("UTF-8"), head);
                 } else if (path.equals("/files")) {
-                    json(sock, repo.listJson().toString());
+                    writeResponse(sock, 200, "OK", "application/json; charset=utf-8",
+                            repo.listJson().toString().getBytes("UTF-8"), head);
+                } else if (path.equals("/download")) {
+                    serveFile(sock, repo.get(queryValue(query, "name")), headers, head);
                 } else {
-                    html(sock, uploadPage);
+                    writeResponse(sock, 200, "OK", "text/html; charset=utf-8",
+                            portalPage.getBytes("UTF-8"), head);
                 }
             } else if ("POST".equalsIgnoreCase(method) && path.equals("/upload")) {
-                String name = null;
-                for (String kv : query.split("&")) {
-                    if (kv.startsWith("name=")) {
-                        name = URLDecoder.decode(kv.substring(5), "UTF-8");
-                    }
-                }
                 int len = 0;
                 try {
                     len = Integer.parseInt(headers.get("content-length"));
                 } catch (Exception ignored) {
                 }
-                saveUpload(raw, len, name, sock);
+                saveUpload(raw, len, queryValue(query, "name"), sock);
             } else {
-                respond(sock, 404, "Not Found", "text/plain", "404");
+                writeResponse(sock, 404, "Not Found", "text/plain",
+                        "404".getBytes("UTF-8"), false);
             }
         } catch (Exception e) {
             Log.e(TAG, "handle", e);
             try {
-                respond(sock, 500, "Server Error", "text/plain", "500");
+                writeResponse(sock, 500, "Server Error", "text/plain",
+                        "500".getBytes("UTF-8"), false);
             } catch (Exception ignored) {
             }
         } finally {
@@ -174,7 +195,118 @@ public class HttpFileServer {
         }
     }
 
-    private void saveUpload(InputStream raw, int contentLength, String name, Socket sock) throws IOException {
+    private static String queryValue(String query, String key) {
+        if (query == null || query.length() == 0) return null;
+        for (String kv : query.split("&")) {
+            if (kv.startsWith(key + "=")) {
+                try {
+                    return URLDecoder.decode(kv.substring(key.length() + 1), "UTF-8");
+                } catch (Exception e) {
+                    return kv.substring(key.length() + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------- download
+
+    /**
+     * Stream a file back to the phone. Supports single-part {@code Range}
+     * requests so large files can be resumed instead of restarted.
+     */
+    private void serveFile(Socket sock, File f, Map<String, String> headers, boolean head)
+            throws IOException {
+        if (f == null || !f.exists() || !f.isFile()) {
+            writeResponse(sock, 404, "Not Found", "text/plain",
+                    "404".getBytes("UTF-8"), head);
+            return;
+        }
+
+        long total = f.length();
+        long start = 0;
+        long end = total - 1;
+        int code = 200;
+        String status = "OK";
+
+        String range = headers.get("range");
+        if (range != null && range.startsWith("bytes=")) {
+            String spec = range.substring("bytes=".length());
+            int dash = spec.indexOf('-');
+            try {
+                long rs = dash > 0 ? Long.parseLong(spec.substring(0, dash).trim()) : 0;
+                String tail = dash >= 0 ? spec.substring(dash + 1).trim() : "";
+                long re = tail.length() > 0 ? Long.parseLong(tail) : total - 1;
+                if (rs < 0 || rs > re || rs >= total) {
+                    writeResponse(sock, 416, "Range Not Satisfiable", "text/plain",
+                            "416".getBytes("UTF-8"), head);
+                    return;
+                }
+                start = rs;
+                end = Math.min(re, total - 1);
+                code = 206;
+                status = "Partial Content";
+            } catch (NumberFormatException ignored) {
+                // fall through to a full 200 response
+            }
+        }
+
+        long length = end - start + 1;
+        String type = FileRepository.mimeOf(f.getName());
+        String encoded = URLEncoder.encode(f.getName(), "UTF-8").replace("+", "%20");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("HTTP/1.1 ").append(code).append(" ").append(status).append("\r\n");
+        sb.append("Content-Type: ").append(type).append("\r\n");
+        sb.append("Content-Length: ").append(length).append("\r\n");
+        sb.append("Accept-Ranges: bytes\r\n");
+        if (code == 206) {
+            sb.append("Content-Range: bytes ").append(start).append("-").append(end)
+                    .append("/").append(total).append("\r\n");
+        }
+        sb.append("Content-Disposition: attachment; filename=\"").append(encoded)
+                .append("\"; filename*=UTF-8''").append(encoded).append("\r\n");
+        sb.append("Cache-Control: no-store\r\n");
+        sb.append("Connection: close\r\n");
+        sb.append("\r\n");
+
+        OutputStream os = sock.getOutputStream();
+        os.write(sb.toString().getBytes("UTF-8"));
+        if (head) {
+            os.flush();
+            return;
+        }
+
+        FileInputStream fis = new FileInputStream(f);
+        try {
+            long skipped = 0;
+            while (skipped < start) {
+                long s = fis.skip(start - skipped);
+                if (s <= 0) break;
+                skipped += s;
+            }
+            byte[] buf = new byte[BUFFER];
+            long remaining = length;
+            while (remaining > 0) {
+                int n = fis.read(buf, 0, (int) Math.min(buf.length, remaining));
+                if (n < 0) break;
+                os.write(buf, 0, n);
+                remaining -= n;
+            }
+            os.flush();
+            Log.i(TAG, "served " + f.getName() + " bytes=" + start + "-" + end);
+        } finally {
+            try {
+                fis.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- upload
+
+    private void saveUpload(InputStream raw, int contentLength, String name, Socket sock)
+            throws IOException {
         File out = repo.target(name);
         FileOutputStream fos = new FileOutputStream(out);
         byte[] buf = new byte[16384];
@@ -211,8 +343,11 @@ public class HttpFileServer {
             o.put("size", total);
         } catch (Exception ignored) {
         }
-        json(sock, o.toString());
+        writeResponse(sock, 200, "OK", "application/json; charset=utf-8",
+                o.toString().getBytes("UTF-8"), false);
     }
+
+    // ---------------------------------------------------------------- plumbing
 
     /** Read until the blank line; byte-by-byte so we never consume body bytes. */
     private static String readHeaderBlock(InputStream in) throws IOException {
@@ -228,26 +363,19 @@ public class HttpFileServer {
         return new String(bos.toByteArray(), "UTF-8");
     }
 
-    private static void json(Socket s, String body) throws IOException {
-        respond(s, 200, "OK", "application/json; charset=utf-8", body);
-    }
-
-    private static void html(Socket s, String body) throws IOException {
-        respond(s, 200, "OK", "text/html; charset=utf-8", body);
-    }
-
-    private static void respond(Socket s, int code, String status, String type, String body) throws IOException {
-        byte[] payload = body.getBytes("UTF-8");
+    private static void writeResponse(Socket s, int code, String status, String type,
+                                      byte[] payload, boolean headOnly) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("HTTP/1.1 ").append(code).append(" ").append(status).append("\r\n");
         sb.append("Content-Type: ").append(type).append("\r\n");
-        sb.append("Content-Length: ").append(payload.length).append("\r\n");
+        sb.append("Content-Length: ").append(headOnly ? 0 : payload.length).append("\r\n");
+        sb.append("Accept-Ranges: bytes\r\n");
         sb.append("Connection: close\r\n");
         sb.append("Cache-Control: no-store\r\n");
         sb.append("\r\n");
         OutputStream os = s.getOutputStream();
         os.write(sb.toString().getBytes("UTF-8"));
-        os.write(payload);
+        if (!headOnly) os.write(payload);
         os.flush();
     }
 }

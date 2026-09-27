@@ -36,13 +36,32 @@ public class FileRepository {
         return dir;
     }
 
-    /** Strip path separators and unsafe chars so a hostile filename cannot escape the storage dir. */
+    /**
+     * Strip path separators and unsafe characters so a hostile filename cannot
+     * escape the storage dir, while still preserving CJK names - "简历.pdf" must
+     * survive the round trip because both transfer directions surface this name
+     * back to the phone.
+     */
     public String sanitize(String raw) {
         String n = (raw == null || raw.trim().isEmpty()) ? "unnamed.bin" : raw.trim();
+        // no traversal
         n = n.replace('\\', '_').replace('/', '_');
         n = n.replace("..", "_");
-        n = n.replaceAll("[^A-Za-z0-9._()\\[\\]\\- ]", "_");
-        if (n.length() > 120) n = n.substring(0, 120);
+        // drop control characters and shell / Windows-hostile punctuation
+        n = n.replaceAll("[\\p{Cntrl}<>:\"|?*]", "_");
+        // a leading dot would hide the file on unix
+        n = n.replaceAll("^[ .]+", "");
+        n = n.trim();
+        if (n.isEmpty()) n = "unnamed.bin";
+        if (n.length() > 120) {
+            int dot = n.lastIndexOf('.');
+            if (dot > 0 && n.length() - dot <= 12) {
+                String ext = n.substring(dot);
+                n = n.substring(0, 120 - ext.length()) + ext;
+            } else {
+                n = n.substring(0, 120);
+            }
+        }
         return n;
     }
 
