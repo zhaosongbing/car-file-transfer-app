@@ -98,6 +98,12 @@ public class TransferService extends Service {
             public void onFileReceived(String name, long size) {
                 updateNotification();
             }
+
+            public void onTransferStart(String name, long size) {
+            }
+
+            public void onTransferProgress(String name, long received, long size) {
+            }
         });
 
         try {

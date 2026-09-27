@@ -30,7 +30,9 @@ import android.widget.Toast;
 import com.zsb.carfiletransfer.miuix.MiuixButton;
 import com.zsb.carfiletransfer.miuix.MiuixCard;
 import com.zsb.carfiletransfer.miuix.MiuixDialog;
+import com.zsb.carfiletransfer.miuix.MiuixIcon;
 import com.zsb.carfiletransfer.miuix.MiuixListItem;
+import com.zsb.carfiletransfer.miuix.MiuixProgress;
 import com.zsb.carfiletransfer.miuix.MiuixQrView;
 import com.zsb.carfiletransfer.miuix.MiuixTabRow;
 import com.zsb.carfiletransfer.miuix.MiuixText;
@@ -86,6 +88,7 @@ public class MainActivity extends Activity {
     private static final int PAGE_HOME = 0;
     private static final int PAGE_LIST = 1;
     private static final int PAGE_DETAIL = 2;
+    private static final int PAGE_RECEIVE = 3;
 
     // ---- responsive tokens ----
     private MiuixWindowSizeClass wsc;
@@ -102,6 +105,7 @@ public class MainActivity extends Activity {
     private LinearLayout pageHome;
     private LinearLayout pageList;
     private LinearLayout pageDetail;
+    private LinearLayout pageReceive;
     private int currentPage = PAGE_HOME;
 
     // home
@@ -111,6 +115,7 @@ public class MainActivity extends Activity {
     private MiuixQrView qrView;
     private MiuixText devAddrValue;
     private TextView statusDot;
+    /** Status card line 1 / line 2: the hotspot's SSID and password. */
     private MiuixText statusTitle;
     private MiuixText statusSub;
     private MiuixText statCount;
@@ -121,7 +126,6 @@ public class MainActivity extends Activity {
     private MiuixText adbText;
     private MiuixTabRow qrModeRow;
     private MiuixButton btnHotspot;
-    private MiuixText apDetail;
 
     // list
     private MiuixText countBadge;
@@ -131,6 +135,18 @@ public class MainActivity extends Activity {
     // detail
     private LinearLayout detailBox;
 
+    // ---- receive page ----
+    private MiuixText recvName;
+    private MiuixText recvMeta;
+    private MiuixProgress recvProgress;
+    private MiuixText recvPercent;
+    private LinearLayout recvBox;
+    private final List<RecvItem> recvSession = new ArrayList<RecvItem>();
+    private volatile boolean receiving = false;
+    private String currentRecvName;
+    private long currentRecvSize;
+    private long currentRecvDone;
+
     private FileRepository repo;
     private SoftApManager softAp;
     private SoftApManager.ApConfig apConfig;
@@ -138,14 +154,51 @@ public class MainActivity extends Activity {
     /** Guards the hotspot toggle while an open / close request is in flight. */
     private boolean hotspotBusy = false;
 
-    /** Bridges background transfer events back into the UI thread. */
+    /**
+     * Bridges background transfer events back into the UI thread.
+     *
+     * <p>As soon as a phone starts pushing a file the car unit jumps to the
+     * dedicated receive page, so the driver sees the transfer without touching
+     * anything.</p>
+     */
     private final HttpFileServer.ReceiveListener receiveListener =
             new HttpFileServer.ReceiveListener() {
                 public void onFileReceived(final String name, final long size) {
                     ui.post(new Runnable() {
                         public void run() {
+                            receiving = false;
+                            currentRecvDone = currentRecvSize;
+                            recvSession.add(0, new RecvItem(name, size));
                             refreshHome();
-                            if (currentPage == PAGE_LIST) renderList();
+                            renderList();
+                            if (currentPage == PAGE_RECEIVE) updateReceiveUi();
+                        }
+                    });
+                }
+
+                public void onTransferStart(final String name, final long size) {
+                    ui.post(new Runnable() {
+                        public void run() {
+                            receiving = true;
+                            currentRecvName = name;
+                            currentRecvSize = size;
+                            currentRecvDone = 0L;
+                            // auto-jump: an incoming transfer pulls the receive
+                            // page forward from wherever the user currently is
+                            showPage(PAGE_RECEIVE);
+                            updateReceiveUi();
+                        }
+                    });
+                }
+
+                public void onTransferProgress(final String name, final long received,
+                                               final long size) {
+                    ui.post(new Runnable() {
+                        public void run() {
+                            currentRecvName = name;
+                            if (size > 0) currentRecvSize = size;
+                            currentRecvDone = received;
+                            if (currentPage == PAGE_RECEIVE) updateReceiveUi();
                         }
                     });
                 }
@@ -199,10 +252,12 @@ public class MainActivity extends Activity {
         pageHome = buildHomePage();
         pageList = buildListPage();
         pageDetail = buildDetailPage();
+        pageReceive = buildReceivePage();
 
         root.addView(pageHome, matchParent());
         root.addView(pageList, matchParent());
         root.addView(pageDetail, matchParent());
+        root.addView(pageReceive, matchParent());
 
         setContentView(root);
         applySystemBars(root);
@@ -270,18 +325,26 @@ public class MainActivity extends Activity {
             showPage(PAGE_LIST);
         } else if (currentPage == PAGE_LIST) {
             showPage(PAGE_HOME);
+        } else if (currentPage == PAGE_RECEIVE) {
+            showPage(PAGE_HOME);
         } else {
             super.onBackPressed();
         }
     }
 
     private void showPage(int page) {
+        if (pageHome == null || pageList == null
+                || pageDetail == null || pageReceive == null) {
+            return; // a transfer can land before the first layout exists
+        }
         currentPage = page;
         pageHome.setVisibility(page == PAGE_HOME ? View.VISIBLE : View.GONE);
         pageList.setVisibility(page == PAGE_LIST ? View.VISIBLE : View.GONE);
         pageDetail.setVisibility(page == PAGE_DETAIL ? View.VISIBLE : View.GONE);
+        pageReceive.setVisibility(page == PAGE_RECEIVE ? View.VISIBLE : View.GONE);
         if (page == PAGE_LIST) renderList();
         if (page == PAGE_HOME) refreshHome();
+        if (page == PAGE_RECEIVE) updateReceiveUi();
     }
 
     // ---------------------------------------------------------------- home page
@@ -329,13 +392,13 @@ public class MainActivity extends Activity {
         FrameLayout logo = new FrameLayout(this);
         int s = dp(wsc.isCompact() ? 36f : 44f);
         logo.setBackground(MiuixTheme.rounded(MiuixTheme.colors().primary, dp(R_BLOCK)));
-        TextView arrow = new TextView(this);
-        arrow.setText("↑");
-        arrow.setTextColor(Color.WHITE);
-        arrow.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, wsc.isCompact() ? 17f : 20f);
-        arrow.setGravity(Gravity.CENTER);
+        // drawn vector, not a text glyph: stays on the same centre line as the title
+        MiuixIcon arrow = new MiuixIcon(this, MiuixIcon.Shape.ARROW_UP,
+                wsc.isCompact() ? 20f : 24f, Color.WHITE);
+        arrow.setStrokeDp(2.4f);
         logo.addView(arrow, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(s, s);
+        lp.gravity = Gravity.CENTER_VERTICAL;
         lp.rightMargin = dp(12f);
         logo.setLayoutParams(lp);
         return logo;
@@ -401,21 +464,6 @@ public class MainActivity extends Activity {
         qLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(qrSlot, qLp);
 
-        qrModeRow = new MiuixTabRow(this, new String[]{
-                getString(R.string.qr_mode_wifi), getString(R.string.qr_mode_addr)}, 0);
-        qrModeRow.setChipStyle(true);
-        qrModeRow.setOnTabSelectedListener(new MiuixTabRow.OnTabSelectedListener() {
-            public void onTabSelected(int index, String title) {
-                qrMode = index;
-                refreshQr();
-            }
-        });
-        LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mLp.topMargin = dp(gapCard);
-        mLp.gravity = Gravity.CENTER_HORIZONTAL;
-        card.addView(qrModeRow, mLp);
-
         LinearLayout devBox = new LinearLayout(this);
         devBox.setOrientation(LinearLayout.VERTICAL);
         devBox.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -435,17 +483,6 @@ public class MainActivity extends Activity {
         devAddrValue.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(600);
         devAddrValue.setGravity(Gravity.CENTER_HORIZONTAL);
         devBox.addView(devAddrValue);
-
-        apDetail = new MiuixText(this, apDetailText(), MiuixText.Role.MICRO,
-                MiuixText.Tone.TERTIARY);
-        apDetail.setSizeSp(12f).setWeight(400);
-        apDetail.setGravity(Gravity.CENTER_HORIZONTAL);
-        apDetail.setSingleLine(false);
-        LinearLayout.LayoutParams apLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        apLp.topMargin = dp(6f);
-        apLp.gravity = Gravity.CENTER_HORIZONTAL;
-        card.addView(apDetail, apLp);
 
         MiuixText tip = new MiuixText(this, getString(R.string.network_tip),
                 MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
@@ -490,21 +527,40 @@ public class MainActivity extends Activity {
         textCol.setOrientation(LinearLayout.VERTICAL);
         left.addView(textCol, marginLeft(12f));
 
-        statusTitle = new MiuixText(this, getString(R.string.status_waiting),
+        // the "ready" slot now carries the hotspot's own credentials
+        statusTitle = new MiuixText(this, apSsidText(),
                 MiuixText.Role.BODY);
         statusTitle.setSizeSp(16f).setWeight(600);
+        statusTitle.setSingleLine(true);
         textCol.addView(statusTitle);
 
-        statusSub = new MiuixText(this, getString(R.string.status_no_device),
+        statusSub = new MiuixText(this, apPassText(),
                 MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
         statusSub.setSizeSp(13f).setWeight(400);
+        statusSub.setSingleLine(true);
         textCol.addView(statusSub);
 
+        // code switcher lives right next to the hotspot switch (was under the QR)
+        qrModeRow = new MiuixTabRow(this, new String[]{
+                getString(R.string.qr_mode_wifi), getString(R.string.qr_mode_addr)}, 0);
+        qrModeRow.setChipStyle(true);
+        qrModeRow.setOnTabSelectedListener(new MiuixTabRow.OnTabSelectedListener() {
+            public void onTabSelected(int index, String title) {
+                qrMode = index;
+                refreshQr();
+            }
+        });
+        LinearLayout.LayoutParams modeLp = wrapContent();
+        modeLp.rightMargin = dp(12f);
+        status.addView(qrModeRow, modeLp);
+
         btnHotspot = new MiuixButton(this, getString(R.string.open_hotspot),
-                MiuixButton.Size.SMALL, MiuixButton.Color.PRIMARY);
-        btnHotspot.setOutlined(true, MiuixTheme.colors().primary);
+                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
+        btnHotspot.setOutlined(true, MiuixTheme.colors().outline);
         btnHotspot.setRadiusDp(R_PILL).setPaddingDp(18f, 10f);
         btnHotspot.setLabelSizeSp(14f).setLabelWeight(600);
+        // design spec: black label on the outlined hotspot switch
+        btnHotspot.setLabelColor(MiuixTheme.colors().onSurface);
         btnHotspot.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 onHotspotClicked();
@@ -621,16 +677,9 @@ public class MainActivity extends Activity {
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
 
-        MiuixText back = new MiuixText(this, "‹", MiuixText.Role.DISPLAY);
-        back.setSizeSp(26f).setWeight(400);
-        back.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                showPage(PAGE_HOME);
-            }
-        });
+        View back = backIcon(PAGE_HOME);
         bar.setLeading(back);
         bar.addTitleSuffix(countChip());
-        if (!wsc.isCompact()) bar.addActionView(searchField());
         bar.addActionView(cleanButton());
         page.addView(bar, wrapWidth());
 
@@ -681,8 +730,24 @@ public class MainActivity extends Activity {
         return pill;
     }
 
-    private View searchField() {
-        return new MiuixTextField(this, null, getString(R.string.search_hint));
+    /**
+     * Back control for the secondary pages. Drawn as a vector instead of a "‹"
+     * glyph so it sits on the same optical centre line as the bar title.
+     */
+    private View backIcon(final int targetPage) {
+        MiuixIcon icon = new MiuixIcon(this, MiuixIcon.Shape.CHEVRON_LEFT,
+                wsc.isCompact() ? 22f : 26f, MiuixTheme.colors().onSurface);
+        icon.setStrokeDp(2.2f);
+        FrameLayout slot = new FrameLayout(this);
+        int s = dp(wsc.isCompact() ? 34f : 40f);
+        slot.setLayoutParams(new LinearLayout.LayoutParams(s, s));
+        slot.addView(icon, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
+        slot.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showPage(targetPage);
+            }
+        });
+        return slot;
     }
 
     private View cleanButton() {
@@ -862,6 +927,222 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ---------------------------------------------------------------- receive page
+
+    /** One completed transfer of the current session. */
+    private static final class RecvItem {
+        final String name;
+        final long size;
+
+        RecvItem(String name, long size) {
+            this.name = name;
+            this.size = size;
+        }
+    }
+
+    private LinearLayout buildReceivePage() {
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(MiuixTheme.colors().background);
+
+        MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.recv_title), null);
+        bar.setHeightDp(barH).setPaddingDp(pad, 0f)
+                .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
+        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setLeading(backIcon(PAGE_HOME));
+        page.addView(bar, wrapWidth());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        page.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        scroll.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 1 - the transfer in flight
+        MiuixCard current = new MiuixCard(this, R_CARD);
+        current.setOutline(MiuixTheme.colors().outline, 1f);
+        current.setContentPaddingDp(28f, 28f, 28f, 28f);
+        content.addView(current, wrapWidth());
+
+        recvName = new MiuixText(this, getString(R.string.recv_idle),
+                MiuixText.Role.SUBTITLE);
+        recvName.setSizeSp(wsc.isCompact() ? 17f : 20f).setWeight(700);
+        recvName.setSingleLine(true);
+        current.addView(recvName);
+
+        recvProgress = new MiuixProgress(this, 10f);
+        LinearLayout.LayoutParams pgLp = wrapWidth();
+        pgLp.topMargin = dp(20f);
+        current.addView(recvProgress, pgLp);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rLp = wrapWidth();
+        rLp.topMargin = dp(12f);
+        current.addView(row, rLp);
+
+        recvMeta = new MiuixText(this, "0 B / 0 B", MiuixText.Role.CAPTION,
+                MiuixText.Tone.TERTIARY);
+        recvMeta.setSizeSp(14f).setWeight(500);
+        recvMeta.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(recvMeta);
+
+        recvPercent = new MiuixText(this, "0%", MiuixText.Role.BODY,
+                MiuixText.Tone.BRAND);
+        recvPercent.setSizeSp(16f).setWeight(700);
+        row.addView(recvPercent);
+
+        // 2 - what already arrived during this session
+        MiuixCard done = new MiuixCard(this, R_CARD);
+        done.setOutline(MiuixTheme.colors().outline, 1f);
+        done.setContentPaddingDp(28f, 28f, 28f, 28f);
+        LinearLayout.LayoutParams dLp = wrapWidth();
+        dLp.topMargin = dp(24f);
+        content.addView(done, dLp);
+
+        MiuixText doneTitle = new MiuixText(this, getString(R.string.recv_done_title),
+                MiuixText.Role.BODY);
+        doneTitle.setSizeSp(16f).setWeight(700);
+        done.addView(doneTitle);
+
+        recvBox = new LinearLayout(this);
+        recvBox.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams bLp = wrapWidth();
+        bLp.topMargin = dp(16f);
+        done.addView(recvBox, bLp);
+
+        // 3 - actions
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams aLp = wrapWidth();
+        aLp.topMargin = dp(24f);
+        content.addView(actions, aLp);
+
+        MiuixButton finish = new MiuixButton(this, getString(R.string.recv_finish),
+                MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
+        finish.setRadiusDp(R_PILL).setPaddingDp(28f, 14f);
+        finish.setLabelSizeSp(15f).setLabelWeight(700);
+        finish.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        finish.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                receiving = false;
+                recvSession.clear();
+                currentRecvName = null;
+                currentRecvSize = 0L;
+                currentRecvDone = 0L;
+                showPage(PAGE_HOME);
+            }
+        });
+        actions.addView(finish);
+
+        MiuixButton gotoList = new MiuixButton(this, getString(R.string.recv_open_list),
+                MiuixButton.Size.MEDIUM, MiuixButton.Color.NEUTRAL);
+        gotoList.setOutlined(true, MiuixTheme.colors().outline);
+        gotoList.setRadiusDp(R_PILL).setPaddingDp(28f, 14f);
+        gotoList.setLabelSizeSp(15f).setLabelWeight(700);
+        gotoList.setLabelColor(MiuixTheme.colors().onSurface);
+        LinearLayout.LayoutParams gLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        gLp.leftMargin = dp(16f);
+        gotoList.setLayoutParams(gLp);
+        gotoList.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showPage(PAGE_LIST);
+            }
+        });
+        actions.addView(gotoList);
+
+        return page;
+    }
+
+    private void updateReceiveUi() {
+        if (recvName == null) return;
+
+        if (currentRecvName == null || currentRecvName.length() == 0) {
+            recvName.setText(getString(R.string.recv_idle));
+        } else {
+            recvName.setText(currentRecvName);
+        }
+
+        long size = currentRecvSize;
+        long done = currentRecvDone;
+        int percent = 0;
+        if (size > 0) {
+            percent = (int) Math.max(0L, Math.min(100L, done * 100L / size));
+        } else if (receiving) {
+            percent = 50; // chunked upload: no content length, show activity
+        } else {
+            percent = 100;
+        }
+        recvProgress.setProgress(percent);
+        recvPercent.setText(percent + "%");
+        recvMeta.setText(receiving
+                ? human(done) + " / " + (size > 0 ? human(size) : getString(R.string.recv_unknown))
+                : human(done) + " · " + getString(R.string.recv_finished));
+
+        // session history
+        recvBox.removeAllViews();
+        if (recvSession.isEmpty()) {
+            MiuixText empty = new MiuixText(this, getString(R.string.recv_empty),
+                    MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
+            empty.setSizeSp(14f).setWeight(400);
+            recvBox.addView(empty);
+            return;
+        }
+        for (int i = 0; i < recvSession.size(); i++) {
+            RecvItem item = recvSession.get(i);
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams lLp = wrapWidth();
+            lLp.topMargin = i == 0 ? 0 : dp(ROW_GAP_DRAFT);
+            recvBox.addView(line, lLp);
+
+            String type = FileRepository.typeOf(item.name);
+            TextView badge = new TextView(this);
+            badge.setText(type);
+            badge.setTextColor(Color.WHITE);
+            badge.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f);
+            badge.setTypeface(android.graphics.Typeface.create("sans-serif",
+                    android.graphics.Typeface.BOLD));
+            badge.setGravity(Gravity.CENTER);
+            badge.setBackground(MiuixTheme.rounded(
+                    MiuixTheme.fileTypeColor(type), dp(R_BLOCK)));
+            line.addView(badge, new LinearLayout.LayoutParams(dp(40f), dp(40f)));
+
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams iLp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            iLp.leftMargin = dp(12f);
+            line.addView(info, iLp);
+
+            MiuixText nm = new MiuixText(this, item.name, MiuixText.Role.BODY_SMALL);
+            nm.setSizeSp(14f).setWeight(600);
+            nm.setSingleLine(true);
+            info.addView(nm);
+
+            MiuixText meta = new MiuixText(this, human(item.size),
+                    MiuixText.Role.MICRO, MiuixText.Tone.TERTIARY);
+            meta.setSizeSp(12f).setWeight(400);
+            info.addView(meta);
+
+            MiuixIcon ok = new MiuixIcon(this, MiuixIcon.Shape.CHEVRON_RIGHT,
+                    18f, MiuixTheme.colors().success);
+            ok.setStrokeDp(2f);
+            line.addView(ok);
+        }
+    }
+
     // ---------------------------------------------------------------- detail page
 
     private LinearLayout buildDetailPage() {
@@ -883,14 +1164,7 @@ public class MainActivity extends Activity {
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
 
-        MiuixText back = new MiuixText(this, "‹", MiuixText.Role.DISPLAY);
-        back.setSizeSp(26f).setWeight(400);
-        back.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                showPage(PAGE_LIST);
-            }
-        });
-        bar.setLeading(back);
+        bar.setLeading(backIcon(PAGE_LIST));
         bar.addTitleSuffix(typeChip(type));
 
         MiuixButton share = new MiuixButton(this, getString(R.string.share),
@@ -1678,19 +1952,19 @@ public class MainActivity extends Activity {
 
         int count = repo.listJson().length();
         statCount.setText(String.valueOf(count));
-        statSize.setText(new DecimalFormat("0.0").format(repo.totalSize() / 1073741824.0));
-        statUnit.setText("GB");
+        // "used space" used to be hard-coded to GB with one decimal, so
+        // anything below 100 MB always rendered as 0 - pick the unit instead
+        String[] space = spaceValueUnit(repo.totalSize());
+        statSize.setText(space[0]);
+        statUnit.setText(space[1]);
         countBadge.setText(String.valueOf(count));
         devAddrValue.setText(addressText());
-        apDetail.setText(apDetailText());
 
         boolean live = linked || hotspotUp;
         statusDot.setBackground(MiuixTheme.rounded(
                 live ? MiuixTheme.colors().success : MiuixTheme.colors().outline, dp(5f)));
-        statusTitle.setText(live ? getString(R.string.status_ready)
-                : getString(R.string.status_waiting));
-        statusSub.setText(live ? getString(R.string.status_waiting_desc)
-                : getString(R.string.status_no_device));
+        statusTitle.setText(apSsidText());
+        statusSub.setText(apPassText());
         if (!hotspotBusy) {
             btnHotspot.setText(hotspotUp ? getString(R.string.close_hotspot)
                     : getString(R.string.open_hotspot));
@@ -1776,12 +2050,53 @@ public class MainActivity extends Activity {
         return ip + " : " + SERVER_PORT;
     }
 
-    private String apDetailText() {
+    /** Status card line 1: the hotspot name the phone has to join. */
+    private String apSsidText() {
         if (apConfig == null || !apConfig.isValid()) {
             return getString(R.string.ap_unknown);
         }
-        return getString(R.string.ap_detail, apConfig.ssid,
+        return getString(R.string.ap_ssid_value, apConfig.ssid);
+    }
+
+    /** Status card line 2: the hotspot password. */
+    private String apPassText() {
+        if (apConfig == null || !apConfig.isValid()) {
+            return getString(R.string.ap_pass_unknown);
+        }
+        return getString(R.string.ap_pass_value,
                 apConfig.isOpen() ? getString(R.string.ap_open) : apConfig.passphrase);
+    }
+
+    /**
+     * "Used space" as value + unit. The unit follows the real magnitude so a
+     * handful of received files shows MB instead of a rounded-down "0 GB".
+     */
+    private String[] spaceValueUnit(long bytes) {
+        DecimalFormat df = new DecimalFormat("0.0");
+        if (bytes >= 1073741824L) {
+            return new String[]{df.format(bytes / 1073741824.0), "GB / " + totalGb() + " GB"};
+        }
+        if (bytes >= 1048576L) {
+            return new String[]{df.format(bytes / 1048576.0), "MB / " + totalMb() + " MB"};
+        }
+        if (bytes >= 1024L) {
+            return new String[]{df.format(bytes / 1024.0), "KB / " + totalMb() + " MB"};
+        }
+        return new String[]{"0", "MB / " + totalMb() + " MB"};
+    }
+
+    private String totalGb() {
+        File dir = repo.getDir();
+        long total = dir != null ? dir.getTotalSpace() : 0L;
+        if (total <= 0L) total = 68719476736L; // 64 GB fallback
+        return new DecimalFormat("0").format(total / 1073741824.0);
+    }
+
+    private String totalMb() {
+        File dir = repo.getDir();
+        long total = dir != null ? dir.getTotalSpace() : 0L;
+        if (total <= 0L) total = 68719476736L;
+        return new DecimalFormat("0").format(total / 1048576.0);
     }
 
     private final Runnable adbPoll = new Runnable() {

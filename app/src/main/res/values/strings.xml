@@ -42,7 +42,20 @@
     <string name="no_settings">无法打开设置页</string>
     <string name="ap_detail">热点 %1$s · 密码 %2$s</string>
     <string name="ap_unknown">未读取到车机热点配置</string>
+    <string name="ap_ssid_value">热点 %1$s</string>
+    <string name="ap_pass_value">密码 %1$s</string>
+    <string name="ap_pass_unknown">长按热点按钮可手动填写</string>
     <string name="ap_open">无密码</string>
+
+    <!-- receive page -->
+    <string name="recv_title">接收文件</string>
+    <string name="recv_idle">等待手机发送文件…</string>
+    <string name="recv_done_title">本次已接收</string>
+    <string name="recv_finish">完成</string>
+    <string name="recv_open_list">查看文件</string>
+    <string name="recv_empty">本次还没有接收完成的文件</string>
+    <string name="recv_unknown">未知大小</string>
+    <string name="recv_finished">接收完成</string>
 
     <!-- transfer home -->
     <string name="qr_wait_title">等待连接后生成二维码</string>
@@ -53,10 +66,10 @@
     <string name="qr_mode_addr">传输地址码</string>
     <string name="not_connected">未连接</string>
     <string name="not_connected_desc">选择连接方式后生成</string>
+    <!-- "已就绪" / "后台保活服务运行中 · 等待手机扫码" were removed from the
+         status card: that slot now shows the hotspot's SSID and password. -->
     <string name="status_waiting">等待连接</string>
     <string name="status_no_device">暂无设备连接</string>
-    <string name="status_ready">已就绪</string>
-    <string name="status_waiting_desc">后台保活服务运行中 · 等待手机扫码</string>
 
     <!-- foreground service -->
     <string name="channel_name">文件传输</string>

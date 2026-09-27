@@ -8,6 +8,17 @@ import android.widget.LinearLayout;
 
 /**
  * MIUIX TopAppBar (large title): title + subtitle with an action slot.
+ *
+ * <p>Every slot (leading icon, title column, action icons) is placed on the
+ * same horizontal centre line. Two things make that reliable:</p>
+ * <ul>
+ *   <li>the bar keeps an explicit height (see {@link #onMeasure}), so
+ *       {@code CENTER_VERTICAL} has a real axis to centre against;</li>
+ *   <li>the subtitle is removed from the layout when empty - an empty
+ *       {@code TextView} still occupies a line box and used to push the title
+ *       above the centre line, which is what made the icon and the title look
+ *       misaligned.</li>
+ * </ul>
  */
 public class MiuixTopAppBar extends LinearLayout {
 
@@ -24,15 +35,19 @@ public class MiuixTopAppBar extends LinearLayout {
         ctx = c;
         setOrientation(LinearLayout.HORIZONTAL);
         setGravity(Gravity.CENTER_VERTICAL);
+        setBaselineAligned(false);
 
         leadingRow = new LinearLayout(c);
         leadingRow.setOrientation(LinearLayout.HORIZONTAL);
         leadingRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        leadingRow.setBaselineAligned(false);
         addView(leadingRow, new LinearLayout.LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 
         LinearLayout textColumn = new LinearLayout(c);
         textColumn.setOrientation(LinearLayout.VERTICAL);
+        textColumn.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        textColumn.setBaselineAligned(false);
         LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
                 0, LayoutParams.WRAP_CONTENT, 1f);
         textColumn.setLayoutParams(textLp);
@@ -40,23 +55,29 @@ public class MiuixTopAppBar extends LinearLayout {
         titleRow = new LinearLayout(c);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        titleRow.setBaselineAligned(false);
 
         title = new MiuixText(c, titleText, MiuixText.Role.DISPLAY);
+        title.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         titleRow.addView(title);
         textColumn.addView(titleRow);
 
         subtitle = new MiuixText(c, subtitleText, MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
+        subtitle.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
         subLp.topMargin = MiuixTheme.dp(c, 4f);
         subtitle.setLayoutParams(subLp);
         textColumn.addView(subtitle);
+        // an empty TextView still reserves a line box and shifts the title up
+        setSubtitle(subtitleText);
 
         addView(textColumn);
 
         actionRow = new LinearLayout(c);
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        actionRow.setBaselineAligned(false);
         addView(actionRow, new LinearLayout.LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
     }
@@ -136,7 +157,9 @@ public class MiuixTopAppBar extends LinearLayout {
     }
 
     public void setSubtitle(CharSequence text) {
-        subtitle.setText(text);
+        boolean empty = text == null || text.length() == 0;
+        subtitle.setText(empty ? "" : text);
+        subtitle.setVisibility(empty ? View.GONE : View.VISIBLE);
     }
 
     public void setTitle(CharSequence text) {
@@ -166,5 +189,20 @@ public class MiuixTopAppBar extends LinearLayout {
 
     public void clearActions() {
         actionRow.removeAllViews();
+    }
+
+    /**
+     * Keep the bar's own height even when its children are shorter, so that
+     * {@code CENTER_VERTICAL} always centres the icon and the title on the same
+     * line.
+     */
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+        int min = getSuggestedMinimumHeight();
+        int measured = getMeasuredHeight();
+        if (measured < min) {
+            setMeasuredDimension(getMeasuredWidth(), min);
+        }
     }
 }

@@ -115,6 +115,13 @@ public class MiuixButton extends FrameLayout {
         return this;
     }
 
+    /** Force the label colour (e.g. the design spec's black outlined button). */
+    public MiuixButton setLabelColor(int color) {
+        contentOverride = color;
+        applyStyle();
+        return this;
+    }
+
     /** Outlined (bordered) treatment instead of a filled surface. */
     public MiuixButton setOutlined(boolean outlined, int strokeColor) {
         this.outlined = outlined;

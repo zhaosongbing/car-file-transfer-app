@@ -42,8 +42,17 @@ public class HttpFileServer {
 
     private static final int BUFFER = 32768;
 
+    /** Report upload progress at most every 128 KB. */
+    private static final long PROGRESS_STEP = 131072L;
+
     public interface ReceiveListener {
         void onFileReceived(String name, long size);
+
+        /** An upload has just started - lets the UI jump to the receive page. */
+        void onTransferStart(String name, long size);
+
+        /** Periodic progress while the body is being written to storage. */
+        void onTransferProgress(String name, long received, long size);
     }
 
     private final int port;
@@ -170,12 +179,18 @@ public class HttpFileServer {
                             portalPage.getBytes("UTF-8"), head);
                 }
             } else if ("POST".equalsIgnoreCase(method) && path.equals("/upload")) {
+                // some clients stream an unknown-size body as chunked instead of
+                // sending Content-Length - decode it before it hits the disk
+                String te = headers.get("transfer-encoding");
+                boolean chunked = te != null
+                        && te.toLowerCase(Locale.US).contains("chunked");
+                InputStream body = chunked ? new ChunkedInputStream(raw) : raw;
                 int len = 0;
                 try {
                     len = Integer.parseInt(headers.get("content-length"));
                 } catch (Exception ignored) {
                 }
-                saveUpload(raw, len, queryValue(query, "name"), sock);
+                saveUpload(body, chunked ? 0 : len, queryValue(query, "name"), sock);
             } else {
                 writeResponse(sock, 404, "Not Found", "text/plain",
                         "404".getBytes("UTF-8"), false);
@@ -311,6 +326,8 @@ public class HttpFileServer {
         FileOutputStream fos = new FileOutputStream(out);
         byte[] buf = new byte[16384];
         long total = 0;
+        fireStart(out.getName(), contentLength);
+        long lastReport = 0;
         try {
             if (contentLength > 0) {
                 int remaining = contentLength;
@@ -320,13 +337,22 @@ public class HttpFileServer {
                     fos.write(buf, 0, n);
                     total += n;
                     remaining -= n;
+                    if (total - lastReport >= PROGRESS_STEP || remaining == 0) {
+                        lastReport = total;
+                        fireProgress(out.getName(), total, contentLength);
+                    }
                 }
             } else {
                 int n;
                 while ((n = raw.read(buf)) > 0) {
                     fos.write(buf, 0, n);
                     total += n;
+                    if (total - lastReport >= PROGRESS_STEP) {
+                        lastReport = total;
+                        fireProgress(out.getName(), total, 0L);
+                    }
                 }
+                fireProgress(out.getName(), total, total);
             }
         } finally {
             fos.flush();
@@ -334,7 +360,11 @@ public class HttpFileServer {
         }
         Log.i(TAG, "received " + out.getName() + " (" + total + " bytes)");
         for (ReceiveListener l : listeners) {
-            l.onFileReceived(out.getName(), total);
+            try {
+                l.onFileReceived(out.getName(), total);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener received: " + t.getMessage());
+            }
         }
         JSONObject o = new JSONObject();
         try {
@@ -345,6 +375,103 @@ public class HttpFileServer {
         }
         writeResponse(sock, 200, "OK", "application/json; charset=utf-8",
                 o.toString().getBytes("UTF-8"), false);
+    }
+
+    // ---------------------------------------------------------------- events
+
+    private void fireStart(String name, long size) {
+        for (ReceiveListener l : listeners) {
+            try {
+                l.onTransferStart(name, size);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener start: " + t.getMessage());
+            }
+        }
+    }
+
+    private void fireProgress(String name, long received, long size) {
+        for (ReceiveListener l : listeners) {
+            try {
+                l.onTransferProgress(name, received, size);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener progress: " + t.getMessage());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- chunked
+
+    /** Minimal HTTP/1.1 chunked transfer decoder (no trailers). */
+    private static final class ChunkedInputStream extends InputStream {
+
+        private final InputStream in;
+        private long remaining = 0L;
+        private boolean eof = false;
+
+        ChunkedInputStream(InputStream in) {
+            this.in = in;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] one = new byte[1];
+            int n = read(one, 0, 1);
+            return n < 0 ? -1 : (one[0] & 0xff);
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (eof) return -1;
+            if (remaining == 0L) {
+                String line = readLine();
+                if (line == null) {
+                    eof = true;
+                    return -1;
+                }
+                int semi = line.indexOf(';');
+                if (semi >= 0) line = line.substring(0, semi);
+                line = line.trim();
+                if (line.length() == 0) {
+                    line = readLine();
+                    if (line == null) {
+                        eof = true;
+                        return -1;
+                    }
+                    line = line.trim();
+                }
+                long size;
+                try {
+                    size = Long.parseLong(line, 16);
+                } catch (NumberFormatException e) {
+                    eof = true;
+                    return -1;
+                }
+                if (size == 0L) {
+                    readLine(); // trailing CRLF after the last chunk
+                    eof = true;
+                    return -1;
+                }
+                remaining = size;
+            }
+            int n = in.read(b, off, (int) Math.min(len, remaining));
+            if (n < 0) {
+                eof = true;
+                return -1;
+            }
+            remaining -= n;
+            if (remaining == 0L) readLine();
+            return n;
+        }
+
+        private String readLine() throws IOException {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            int c;
+            while ((c = in.read()) >= 0) {
+                if (c == '\n') return bos.toString("UTF-8");
+                if (c != '\r') bos.write(c);
+            }
+            return bos.size() > 0 ? bos.toString("UTF-8") : null;
+        }
     }
 
     // ---------------------------------------------------------------- plumbing
