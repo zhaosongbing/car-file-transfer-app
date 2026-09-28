@@ -45,8 +45,10 @@ public class MiuixDialog {
         private View content;
         private CharSequence positiveText;
         private CharSequence negativeText;
+        private CharSequence neutralText;
         private OnActionListener positiveListener;
         private OnActionListener negativeListener;
+        private OnActionListener neutralListener;
         private boolean cancelable = true;
         private float widthDp = 420f;
 
@@ -78,6 +80,13 @@ public class MiuixDialog {
         public Builder setNegative(CharSequence text, OnActionListener l) {
             negativeText = text;
             negativeListener = l;
+            return this;
+        }
+
+        /** Third, low-emphasis action - rendered on the far left of the row. */
+        public Builder setNeutral(CharSequence text, OnActionListener l) {
+            neutralText = text;
+            neutralListener = l;
             return this;
         }
 
@@ -149,7 +158,7 @@ public class MiuixDialog {
                 card.addView(content);
             }
 
-            if (positiveText != null || negativeText != null) {
+            if (positiveText != null || negativeText != null || neutralText != null) {
                 LinearLayout row = new LinearLayout(c);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 row.setGravity(Gravity.END);
@@ -159,6 +168,25 @@ public class MiuixDialog {
                 rowLp.topMargin = MiuixTheme.dp(c, 20f);
                 row.setLayoutParams(rowLp);
 
+                if (neutralText != null) {
+                    MiuixButton neu = new MiuixButton(c, neutralText,
+                            MiuixButton.Size.MEDIUM, MiuixButton.Color.NEUTRAL);
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.rightMargin = MiuixTheme.dp(c, 12f);
+                    neu.setLayoutParams(lp);
+                    neu.setOnClickListener(new View.OnClickListener() {
+                        public void onClick(View v) {
+                            if (neutralListener != null && ref[0] != null) {
+                                neutralListener.onAction(ref[0]);
+                            } else if (ref[0] != null) {
+                                ref[0].dismiss();
+                            }
+                        }
+                    });
+                    row.addView(neu);
+                }
                 if (negativeText != null) {
                     MiuixButton neg = new MiuixButton(c, negativeText,
                             MiuixButton.Size.MEDIUM, MiuixButton.Color.NEUTRAL);

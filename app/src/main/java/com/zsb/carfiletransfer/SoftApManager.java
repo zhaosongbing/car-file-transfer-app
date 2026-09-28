@@ -773,12 +773,26 @@ public class SoftApManager {
             "ap0", "ap1", "swlan0", "softap0", "wlan1", "wl0.1", "wlan0"
     };
 
+    /** Subnets the platform hands out for tethering / local-only hotspots. */
+    private static final String[] AP_SUBNETS = {
+            "192.168.43.", "192.168.49.", "192.168.137."
+    };
+
     /**
      * The address a phone should use to reach this device. Prefers the address
      * bound to the access point interface so the QR stays correct when the unit
      * is simultaneously joined to another Wi-Fi network.
      */
     public static String getApIp() {
+        List<String> all = getIpAddresses();
+        // 1 - the classic Android soft AP subnets win outright, no matter which
+        //     interface name the board happens to use
+        for (String p : AP_SUBNETS) {
+            for (String ip : all) {
+                if (ip.startsWith(p)) return ip;
+            }
+        }
+        // 2 - otherwise trust the well known access point interface names
         for (String name : AP_INTERFACES) {
             try {
                 NetworkInterface ni = NetworkInterface.getByName(name);
@@ -793,16 +807,23 @@ public class SoftApManager {
             } catch (Exception ignored) {
             }
         }
-        List<String> all = getIpAddresses();
+        // 3 - any private address is better than none
         for (String ip : all) {
-            if (ip.startsWith("192.168.43.") || ip.startsWith("192.168.49.")) return ip;
-        }
-        for (String ip : all) {
-            if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
-                return ip;
-            }
+            if (isPrivate(ip)) return ip;
         }
         return all.isEmpty() ? null : all.get(0);
+    }
+
+    private static boolean isPrivate(String ip) {
+        return ip.startsWith("192.168.") || ip.startsWith("10.")
+                || ip.startsWith("172.16.") || ip.startsWith("172.17.")
+                || ip.startsWith("172.18.") || ip.startsWith("172.19.")
+                || ip.startsWith("172.20.") || ip.startsWith("172.21.")
+                || ip.startsWith("172.22.") || ip.startsWith("172.23.")
+                || ip.startsWith("172.24.") || ip.startsWith("172.25.")
+                || ip.startsWith("172.26.") || ip.startsWith("172.27.")
+                || ip.startsWith("172.28.") || ip.startsWith("172.29.")
+                || ip.startsWith("172.30.") || ip.startsWith("172.31.");
     }
 
     public static String getPreferredIp() {

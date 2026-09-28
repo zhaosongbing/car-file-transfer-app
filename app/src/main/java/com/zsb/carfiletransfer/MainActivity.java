@@ -85,6 +85,12 @@ public class MainActivity extends Activity {
     private static final int REQ_PERMISSIONS = 2101;
     private static final int REQ_LOCATION = 2102;
 
+    /** Second back press has to land inside this window to leave the app. */
+    private static final long BACK_EXIT_WINDOW_MS = 2000L;
+    private long lastBackAt = 0L;
+    /** The release check runs once per process start, not on every resume. */
+    private boolean updateChecked = false;
+
     private static final int PAGE_HOME = 0;
     private static final int PAGE_LIST = 1;
     private static final int PAGE_DETAIL = 2;
@@ -113,7 +119,6 @@ public class MainActivity extends Activity {
     private MiuixText qrDesc;
     private FrameLayout qrSlot;
     private MiuixQrView qrView;
-    private MiuixText devAddrValue;
     private TextView statusDot;
     /** Status card line 1 / line 2: the hotspot's SSID and password. */
     private MiuixText statusTitle;
@@ -305,6 +310,10 @@ public class MainActivity extends Activity {
         super.onResume();
         hotspotUp = softAp.isHotspotUp();
         refreshHome();
+        if (!updateChecked) {
+            updateChecked = true;
+            UpdateManager.check(this, false);
+        }
         if (!linked && !connectDialogShown) {
             connectDialogShown = true;
             showConnectDialog();
@@ -328,7 +337,16 @@ public class MainActivity extends Activity {
         } else if (currentPage == PAGE_RECEIVE) {
             showPage(PAGE_HOME);
         } else {
-            super.onBackPressed();
+            // home page: the first press only warns, a second press within
+            // BACK_EXIT_WINDOW_MS really leaves for the launcher
+            long now = System.currentTimeMillis();
+            if (now - lastBackAt < BACK_EXIT_WINDOW_MS) {
+                lastBackAt = 0L;
+                super.onBackPressed();
+                return;
+            }
+            lastBackAt = now;
+            toast(getString(R.string.exit_hint));
         }
     }
 
@@ -464,25 +482,22 @@ public class MainActivity extends Activity {
         qLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(qrSlot, qLp);
 
-        LinearLayout devBox = new LinearLayout(this);
-        devBox.setOrientation(LinearLayout.VERTICAL);
-        devBox.setGravity(Gravity.CENTER_HORIZONTAL);
-        LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(
+        // the code switcher sits directly under the QR code again: hotspot
+        // join code on the left, transfer address code on the right
+        qrModeRow = new MiuixTabRow(this, new String[]{
+                getString(R.string.qr_mode_wifi), getString(R.string.qr_mode_addr)}, qrMode);
+        qrModeRow.setChipStyle(true);
+        qrModeRow.setOnTabSelectedListener(new MiuixTabRow.OnTabSelectedListener() {
+            public void onTabSelected(int index, String title) {
+                qrMode = index;
+                refreshQr();
+            }
+        });
+        LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bLp.topMargin = dp(gapCard);
-        bLp.gravity = Gravity.CENTER_HORIZONTAL;
-        card.addView(devBox, bLp);
-
-        MiuixText devName = new MiuixText(this, getString(R.string.device_name_value),
-                MiuixText.Role.BODY_SMALL);
-        devName.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(600);
-        devName.setGravity(Gravity.CENTER_HORIZONTAL);
-        devBox.addView(devName);
-
-        devAddrValue = new MiuixText(this, addressText(), MiuixText.Role.BODY_SMALL);
-        devAddrValue.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(600);
-        devAddrValue.setGravity(Gravity.CENTER_HORIZONTAL);
-        devBox.addView(devAddrValue);
+        mLp.topMargin = dp(gapCard);
+        mLp.gravity = Gravity.CENTER_HORIZONTAL;
+        card.addView(qrModeRow, mLp);
 
         MiuixText tip = new MiuixText(this, getString(R.string.network_tip),
                 MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
@@ -539,20 +554,6 @@ public class MainActivity extends Activity {
         statusSub.setSizeSp(13f).setWeight(400);
         statusSub.setSingleLine(true);
         textCol.addView(statusSub);
-
-        // code switcher lives right next to the hotspot switch (was under the QR)
-        qrModeRow = new MiuixTabRow(this, new String[]{
-                getString(R.string.qr_mode_wifi), getString(R.string.qr_mode_addr)}, 0);
-        qrModeRow.setChipStyle(true);
-        qrModeRow.setOnTabSelectedListener(new MiuixTabRow.OnTabSelectedListener() {
-            public void onTabSelected(int index, String title) {
-                qrMode = index;
-                refreshQr();
-            }
-        });
-        LinearLayout.LayoutParams modeLp = wrapContent();
-        modeLp.rightMargin = dp(12f);
-        status.addView(qrModeRow, modeLp);
 
         btnHotspot = new MiuixButton(this, getString(R.string.open_hotspot),
                 MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
@@ -735,7 +736,7 @@ public class MainActivity extends Activity {
      * glyph so it sits on the same optical centre line as the bar title.
      */
     private View backIcon(final int targetPage) {
-        MiuixIcon icon = new MiuixIcon(this, MiuixIcon.Shape.CHEVRON_LEFT,
+        MiuixIcon icon = new MiuixIcon(this, MiuixIcon.Shape.BACK,
                 wsc.isCompact() ? 22f : 26f, MiuixTheme.colors().onSurface);
         icon.setStrokeDp(2.2f);
         FrameLayout slot = new FrameLayout(this);
@@ -1958,7 +1959,6 @@ public class MainActivity extends Activity {
         statSize.setText(space[0]);
         statUnit.setText(space[1]);
         countBadge.setText(String.valueOf(count));
-        devAddrValue.setText(addressText());
 
         boolean live = linked || hotspotUp;
         statusDot.setBackground(MiuixTheme.rounded(
@@ -1985,7 +1985,7 @@ public class MainActivity extends Activity {
         if (live) {
             payload = qrMode == 0
                     ? SoftApManager.wifiQrPayload(apConfig)
-                    : "http://" + SoftApManager.getApIp() + ":" + SERVER_PORT;
+                    : "http://" + SoftApManager.getApIp() + ":" + serverPort();
         }
         if (payload == null || payload.length() == 0) {
             qrSlot.addView(placeholderCard());
@@ -2044,10 +2044,14 @@ public class MainActivity extends Activity {
         return ph;
     }
 
-    private String addressText() {
-        String ip = SoftApManager.getApIp();
-        if (ip == null) ip = "0.0.0.0";
-        return ip + " : " + SERVER_PORT;
+    /**
+     * The port the transfer server is actually listening on. 8899 can already be
+     * taken by a stale process; the server then walks up to the next free port,
+     * and the QR code has to follow it instead of advertising a dead address.
+     */
+    private int serverPort() {
+        int p = TransferService.getPort();
+        return p > 0 ? p : SERVER_PORT;
     }
 
     /** Status card line 1: the hotspot name the phone has to join. */
@@ -2114,7 +2118,8 @@ public class MainActivity extends Activity {
                                 if (live != null && live.isValid()) apConfig = live;
                                 refreshHome();
                             } else if (ap && currentPage == PAGE_HOME) {
-                                devAddrValue.setText(addressText());
+                                // the AP address is re-read on every refresh anyway
+                                refreshHome();
                             }
                         }
                     });

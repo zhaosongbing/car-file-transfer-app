@@ -70,6 +70,17 @@ public class TransferService extends Service {
         return s != null && s.server != null && s.server.isRunning();
     }
 
+    /**
+     * The port the HTTP end point is really bound to, or 0 when the service is
+     * not up. The UI must ask for this instead of assuming 8899, because the
+     * server walks to the next free port when 8899 is already taken.
+     */
+    public static int getPort() {
+        TransferService s = instance;
+        if (s == null || s.server == null || !s.server.isRunning()) return 0;
+        return s.server.getPort();
+    }
+
     public static void addListener(HttpFileServer.ReceiveListener l) {
         LISTENERS.add(l);
         TransferService s = instance;
@@ -109,7 +120,18 @@ public class TransferService extends Service {
         try {
             server.start();
         } catch (Exception e) {
+            // first bind can race with the sockets a previous instance left in
+            // TIME_WAIT; give the kernel a moment and try once more
             Log.e(TAG, "server: " + e.getMessage());
+            try {
+                Thread.sleep(800L);
+            } catch (InterruptedException ignored) {
+            }
+            try {
+                server.start();
+            } catch (Exception e2) {
+                Log.e(TAG, "server retry: " + e2.getMessage());
+            }
         }
 
         createChannel();
@@ -227,7 +249,7 @@ public class TransferService extends Service {
     private String address() {
         String ip = SoftApManager.getApIp();
         if (ip == null) ip = "0.0.0.0";
-        return ip + ":" + HttpFileServer.DEFAULT_PORT;
+        return ip + ":" + (server != null ? server.getPort() : HttpFileServer.DEFAULT_PORT);
     }
 
     // ------------------------------------------------------------ helpers

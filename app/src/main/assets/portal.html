@@ -348,7 +348,11 @@
     var done = 0; for(var k=0;k<i;k++) done += sel[k].size;
     $('pnumText').textContent = '已发送 ' + fmt(done) + ' / ' + fmt(total);
 
+    var attempt = 0;
     var started = Date.now();
+    function run(){
+    attempt++;
+    started = Date.now();
     xhr = new XMLHttpRequest();
     xhr.open('POST', 'upload?name=' + encodeURIComponent(f.name), true);
     xhr.upload.onprogress = function(ev){
@@ -366,11 +370,18 @@
       }
     };
     xhr.onload = function(){
+      // one automatic retry: a single hiccup on the hotspot should not lose a file
+      if(xhr.status >= 500 && attempt < 2){ run(); return; }
       f.state = (xhr.status >= 200 && xhr.status < 300) ? 'done' : 'err';
       renderQueue(); sendNext(i+1);
     };
-    xhr.onerror = function(){ f.state = 'err'; renderQueue(); sendNext(i+1); };
+    xhr.onerror = function(){
+      if(attempt < 2){ run(); return; }
+      f.state = 'err'; renderQueue(); sendNext(i+1);
+    };
     xhr.send(f.file);
+    }
+    run();
   }
 
   function finish(){

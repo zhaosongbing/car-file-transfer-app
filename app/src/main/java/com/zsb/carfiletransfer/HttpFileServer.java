@@ -11,6 +11,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLEncoder;
@@ -55,7 +56,15 @@ public class HttpFileServer {
         void onTransferProgress(String name, long received, long size);
     }
 
+    /** How far to walk up when the preferred port is already taken. */
+    private static final int PORT_SCAN = 20;
+
+    /** Header phase timeout - a peer that never finishes its request line. */
+    private static final int TIMEOUT_HEADER_MS = 30000;
+
     private final int port;
+    /** The port actually bound, which may differ when {@code port} was taken. */
+    private int boundPort;
     private final FileRepository repo;
     private final String portalPage;
     private final String deviceName;
@@ -67,6 +76,7 @@ public class HttpFileServer {
 
     public HttpFileServer(int port, FileRepository repo, String portalPage, String deviceName) {
         this.port = port;
+        this.boundPort = port;
         this.repo = repo;
         this.portalPage = portalPage;
         this.deviceName = deviceName;
@@ -76,24 +86,48 @@ public class HttpFileServer {
         listeners.add(l);
     }
 
+    /**
+     * Bind the listener.
+     *
+     * <p>{@code SO_REUSEADDR} has to be set <em>before</em> {@code bind()} - the
+     * old code called the constructor first (which binds immediately) and then
+     * set the flag, so a port left in TIME_WAIT by a previous service instance
+     * still failed to bind. If {@code port} really is taken we walk up to the
+     * next free one instead of dying silently, which used to leave the UI
+     * advertising an address nothing was listening on.</p>
+     */
     public synchronized void start() throws IOException {
         if (running) return;
-        serverSocket = new ServerSocket(port);
-        serverSocket.setReuseAddress(true);
-        running = true;
-        pool = Executors.newFixedThreadPool(8);
-        Thread t = new Thread(new Runnable() {
-            public void run() {
-                acceptLoop();
+        IOException last = null;
+        for (int p = port; p < port + PORT_SCAN; p++) {
+            try {
+                ServerSocket ss = new ServerSocket();
+                ss.setReuseAddress(true);
+                ss.bind(new InetSocketAddress(p));
+                serverSocket = ss;
+                boundPort = p;
+                running = true;
+                pool = Executors.newFixedThreadPool(8);
+                Thread t = new Thread(new Runnable() {
+                    public void run() {
+                        acceptLoop();
+                    }
+                }, "accept-loop");
+                t.setDaemon(true);
+                t.start();
+                Log.i(TAG, "server started on " + p);
+                return;
+            } catch (IOException e) {
+                last = e;
+                Log.w(TAG, "port " + p + " unavailable: " + e.getMessage());
             }
-        }, "accept-loop");
-        t.setDaemon(true);
-        t.start();
-        Log.i(TAG, "server started on " + port);
+        }
+        throw last != null ? last : new IOException("no free port");
     }
 
     public synchronized void stop() {
         running = false;
+        boundPort = port;
         try {
             if (serverSocket != null) serverSocket.close();
         } catch (IOException ignored) {
@@ -106,8 +140,9 @@ public class HttpFileServer {
         return running;
     }
 
+    /** The port the listener is actually bound to (may differ from the request). */
     public int getPort() {
-        return port;
+        return boundPort;
     }
 
     private void acceptLoop() {
@@ -129,10 +164,21 @@ public class HttpFileServer {
 
     private void handle(Socket sock) {
         try {
-            sock.setSoTimeout(60000);
+            // Only the request phase is time-boxed. A phone that locks its screen
+            // mid-upload stalls TCP for minutes; the old fixed 60 s read timeout
+            // then threw in the middle of the body, the request was answered with
+            // 500 and the file was lost - which is exactly the "cannot transfer"
+            // symptom. Once the headers are in, reading blocks until the peer
+            // either finishes or drops.
+            sock.setSoTimeout(TIMEOUT_HEADER_MS);
             InputStream raw = sock.getInputStream();
             String headerBlock = readHeaderBlock(raw);
             if (headerBlock.isEmpty()) return;
+            sock.setSoTimeout(0);
+            try {
+                sock.setReceiveBufferSize(262144);
+            } catch (Exception ignored) {
+            }
 
             String[] lines = headerBlock.split("\r\n");
             String[] req = lines[0].split(" ");
@@ -185,12 +231,14 @@ public class HttpFileServer {
                 boolean chunked = te != null
                         && te.toLowerCase(Locale.US).contains("chunked");
                 InputStream body = chunked ? new ChunkedInputStream(raw) : raw;
-                int len = 0;
+                // long, not int: a 3 GB file used to overflow to a negative
+                // length and the upload was then written as zero bytes
+                long len = -1L;
                 try {
-                    len = Integer.parseInt(headers.get("content-length"));
+                    len = Long.parseLong(headers.get("content-length"));
                 } catch (Exception ignored) {
                 }
-                saveUpload(body, chunked ? 0 : len, queryValue(query, "name"), sock);
+                saveUpload(body, chunked ? -1L : len, queryValue(query, "name"), sock);
             } else {
                 writeResponse(sock, 404, "Not Found", "text/plain",
                         "404".getBytes("UTF-8"), false);
@@ -320,19 +368,22 @@ public class HttpFileServer {
 
     // ---------------------------------------------------------------- upload
 
-    private void saveUpload(InputStream raw, int contentLength, String name, Socket sock)
+    /**
+     * @param contentLength declared body size, or -1 when unknown (chunked)
+     */
+    private void saveUpload(InputStream raw, long contentLength, String name, Socket sock)
             throws IOException {
         File out = repo.target(name);
         FileOutputStream fos = new FileOutputStream(out);
         byte[] buf = new byte[16384];
         long total = 0;
-        fireStart(out.getName(), contentLength);
+        fireStart(out.getName(), contentLength > 0 ? contentLength : 0L);
         long lastReport = 0;
         try {
             if (contentLength > 0) {
-                int remaining = contentLength;
+                long remaining = contentLength;
                 while (remaining > 0) {
-                    int n = raw.read(buf, 0, Math.min(buf.length, remaining));
+                    int n = raw.read(buf, 0, (int) Math.min(buf.length, remaining));
                     if (n < 0) break;
                     fos.write(buf, 0, n);
                     total += n;
@@ -341,6 +392,11 @@ public class HttpFileServer {
                         lastReport = total;
                         fireProgress(out.getName(), total, contentLength);
                     }
+                }
+                fos.flush();
+                try {
+                    fos.getFD().sync();
+                } catch (Exception ignored) {
                 }
             } else {
                 int n;

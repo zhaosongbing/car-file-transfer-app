@@ -18,7 +18,9 @@ import android.widget.LinearLayout;
 public class MiuixIcon extends View {
 
     public enum Shape {
-        CHEVRON_LEFT, CHEVRON_RIGHT, ARROW_UP, TRASH, SEARCH
+        CHEVRON_LEFT, CHEVRON_RIGHT, ARROW_UP, TRASH, SEARCH,
+        /** Standard "back" arrow: a horizontal stem plus a chevron head. */
+        BACK
     }
 
     private final Shape shape;
@@ -90,6 +92,9 @@ public class MiuixIcon extends View {
             case ARROW_UP:
                 drawArrowUp(canvas, cx, cy, u);
                 break;
+            case BACK:
+                drawBack(canvas, cx, cy, u);
+                break;
             case TRASH:
                 drawTrash(canvas, cx, cy, u);
                 break;
@@ -116,6 +121,23 @@ public class MiuixIcon extends View {
         p.moveTo(cx - a * 0.72f, cy - a * 0.28f);
         p.lineTo(cx, cy - a);
         p.lineTo(cx + a * 0.72f, cy - a * 0.28f);
+        canvas.drawPath(p, paint);
+    }
+
+    /**
+     * The platform back affordance: a stroke running left-to-right with the
+     * chevron head on the left. A bare chevron reads as a "greater than" sign
+     * at small sizes, which is why the list page used to look wrong.
+     */
+    private void drawBack(Canvas canvas, float cx, float cy, float u) {
+        float a = u * 0.26f;
+        float right = cx + a * 1.30f;
+        float tipX = cx - a * 1.10f;
+        canvas.drawLine(tipX, cy, right, cy, paint);
+        Path p = new Path();
+        p.moveTo(tipX + a * 0.90f, cy - a);
+        p.lineTo(tipX, cy);
+        p.lineTo(tipX + a * 0.90f, cy + a);
         canvas.drawPath(p, paint);
     }
 
