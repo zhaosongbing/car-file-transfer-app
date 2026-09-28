@@ -283,6 +283,86 @@ public class SoftApManager {
         return hasReservation() || isSystemApEnabled() || isApInterfaceUp();
     }
 
+    /**
+     * True when at least one device is joined to this device's own hotspot.
+     * Reads {@code /proc/net/arp} and reports a non-loopback client whose
+     * hardware address is populated and whose IP sits on the classic Android
+     * tethering subnets. Permission-free and reflection-free.
+     *
+     * <p>The ARP entry is populated once the client actually exchanges packets
+     * with the gateway, so this returns true a moment after the phone connects
+     * rather than instantly.</p>
+     */
+    public boolean hasConnectedClient() {
+        java.io.BufferedReader r = null;
+        try {
+            r = new java.io.BufferedReader(new java.io.FileReader("/proc/net/arp"));
+            String line;
+            boolean header = true;
+            while ((line = r.readLine()) != null) {
+                if (header) {
+                    header = false;
+                    continue;
+                }
+                String[] p = line.trim().split("\\s+");
+                if (p.length < 6) continue;
+                String ip = p[0];
+                String hw = p[3];
+                String state = p[5];
+                if (hw == null || hw.equals("00:00:00:00:00:00")) continue;
+                if (!"0x2".equals(state) && !"REACHABLE".equals(state)
+                        && !"STALE".equals(state) && !"DELAY".equals(state)
+                        && !"PROBE".equals(state)) continue;
+                if (!isApClientIp(ip)) continue;
+                return true;
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (r != null) try {
+                r.close();
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
+
+    private boolean isApClientIp(String ip) {
+        if (ip == null) return false;
+        for (String s : AP_SUBNETS) {
+            if (ip.startsWith(s)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * True when the device has joined an external Wi-Fi network (typically the
+     * phone's own hotspot) - the reverse of {@link #isHotspotUp()}. Lets the
+     * module report a connected / transfer-ready state even when the car unit is
+     * the station rather than the access point.
+     */
+    public boolean isOnExternalWifi() {
+        try {
+            if (wifi == null || !wifi.isWifiEnabled()) return false;
+            Object info = wifi.getConnectionInfo();
+            if (info == null) return false;
+            int nid = invokeInt(info, "getNetworkId");
+            if (nid < 0) return false;
+            // our own AP is reported by isHotspotUp(); only a network we joined
+            // elsewhere counts as "external"
+            return !isHotspotUp();
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private static int invokeInt(Object target, String methodName) {
+        try {
+            return (int) target.getClass().getMethod(methodName).invoke(target);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     /** Live credentials, preferring the running reservation. */
     public ApConfig liveConfig() {
         if (reservation != null) {

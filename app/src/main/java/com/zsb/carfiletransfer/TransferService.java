@@ -39,6 +39,10 @@ public class TransferService extends Service {
     private static final CopyOnWriteArrayList<HttpFileServer.ReceiveListener>
             LISTENERS = new CopyOnWriteArrayList<HttpFileServer.ReceiveListener>();
 
+    /** Text listeners (phone -> car) registered before the service exists. */
+    private static final CopyOnWriteArrayList<HttpFileServer.TextListener>
+            TEXT_LISTENERS = new CopyOnWriteArrayList<HttpFileServer.TextListener>();
+
     private FileRepository repo;
     private HttpFileServer server;
 
@@ -91,6 +95,19 @@ public class TransferService extends Service {
         LISTENERS.remove(l);
     }
 
+    /** Register a listener for text the phone pushes to the car. */
+    public static void addTextListener(HttpFileServer.TextListener l) {
+        TEXT_LISTENERS.add(l);
+        TransferService s = instance;
+        if (s != null && s.server != null) s.server.addTextListener(l);
+    }
+
+    /** Car pushes a text snippet the phone portal will poll for. */
+    public static void pushTextToPhone(String text) {
+        TransferService s = instance;
+        if (s != null && s.server != null) s.server.pushTextToPhone(text);
+    }
+
     // ------------------------------------------------------------ lifecycle
 
     @Override
@@ -104,6 +121,9 @@ public class TransferService extends Service {
 
         for (HttpFileServer.ReceiveListener l : LISTENERS) {
             server.addListener(l);
+        }
+        for (HttpFileServer.TextListener l : TEXT_LISTENERS) {
+            server.addTextListener(l);
         }
         server.addListener(new HttpFileServer.ReceiveListener() {
             public void onFileReceived(String name, long size) {

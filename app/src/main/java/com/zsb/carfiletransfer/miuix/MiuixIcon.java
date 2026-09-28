@@ -20,7 +20,11 @@ public class MiuixIcon extends View {
     public enum Shape {
         CHEVRON_LEFT, CHEVRON_RIGHT, ARROW_UP, TRASH, SEARCH,
         /** Standard "back" arrow: a horizontal stem plus a chevron head. */
-        BACK
+        BACK,
+        /** Two overlapping rounded rectangles - the Android copy glyph. */
+        COPY,
+        /** A cross mark - used for dialog close affordances. */
+        CLOSE
     }
 
     private final Shape shape;
@@ -95,6 +99,12 @@ public class MiuixIcon extends View {
             case BACK:
                 drawBack(canvas, cx, cy, u);
                 break;
+            case COPY:
+                drawCopy(canvas, cx, cy, u);
+                break;
+            case CLOSE:
+                drawClose(canvas, cx, cy, u);
+                break;
             case TRASH:
                 drawTrash(canvas, cx, cy, u);
                 break;
@@ -163,5 +173,26 @@ public class MiuixIcon extends View {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(s, s);
         lp.gravity = Gravity.CENTER_VERTICAL;
         return lp;
+    }
+
+    /** Two overlapping rounded rectangles: the copy glyph. */
+    private void drawCopy(Canvas canvas, float cx, float cy, float u) {
+        float r = u * 0.12f;
+        float s = u * 0.27f;
+        // back sheet, offset up-left
+        float bx = cx - u * 0.12f;
+        float by = cy - u * 0.12f;
+        canvas.drawRoundRect(bx - s, by - s, bx + s, by + s, r, r, paint);
+        // front sheet, offset down-right
+        float fx = cx + u * 0.12f;
+        float fy = cy + u * 0.12f;
+        canvas.drawRoundRect(fx - s, fy - s, fx + s, fy + s, r, r, paint);
+    }
+
+    /** A simple cross mark: the close glyph. */
+    private void drawClose(Canvas canvas, float cx, float cy, float u) {
+        float a = u * 0.28f;
+        canvas.drawLine(cx - a, cy - a, cx + a, cy + a, paint);
+        canvas.drawLine(cx - a, cy + a, cx + a, cy - a, paint);
     }
 }

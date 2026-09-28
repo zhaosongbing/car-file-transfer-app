@@ -165,4 +165,71 @@
     <string name="no_installer">没有可用的安装器</string>
     <string name="no_viewer">没有可以打开该文件的应用</string>
     <string name="server_failed">接收服务启动失败</string>
+
+    <!-- hotspot module states (热点直连) -->
+    <string name="state_idle_title">热点未开启</string>
+    <string name="state_idle_desc">点击下方按钮打开本机热点，手机扫码即可连接</string>
+    <string name="state_ready_desc">等待手机连接到本机热点…</string>
+    <string name="state_ready_desc_timeout">仍未检测到连接，请确认手机已连接到本机热点</string>
+    <string name="state_connected_title">设备已连接</string>
+    <string name="state_connected_desc">手机已连接到本机热点，可扫码或输入地址传输</string>
+    <string name="state_no_config">暂未读取到热点配置，长按热点按钮可手动填写</string>
+    <string name="disconnect_error">设备连接已断开</string>
+    <string name="detect_timeout">连接检测超时，请确认手机已连接到本机热点</string>
+
+    <!-- hotspot module: credential rows -->
+    <string name="label_account">账号</string>
+    <string name="label_password">密码</string>
+
+    <!-- hotspot module: QR card -->
+    <string name="qr_idle_title">等待连接</string>
+    <string name="qr_idle_desc">打开热点并等待手机连接后，此处显示传输地址码</string>
+    <string name="qr_ready_title_conn">扫码或输入地址传输</string>
+    <string name="qr_ready_desc_conn">手机扫码后，可上传文件到车机，也可从车机下载文件</string>
+    <string name="addr_label">传输地址</string>
+    <string name="see_code">查看连接码</string>
+    <string name="copy_address">复制地址</string>
+
+    <!-- copy feedback -->
+    <string name="copied_account">已复制账号</string>
+    <string name="copied_password">已复制密码</string>
+    <string name="copied_address">已复制传输地址</string>
+    <string name="copy_empty">没有可复制的内容</string>
+    <string name="copy_failed">复制失败</string>
+
+    <!-- about page -->
+    <string name="about_title">关于</string>
+    <string name="about_version">版本 %1$s</string>
+    <string name="about_banner">文件互传 · 车机端\n零流量无线互传</string>
+    <string name="about_author_default">作者：ZSB Studio</string>
+    <string name="about_desc_default">车机与手机之间极简、安全的文件互传，支持热点直连与局域网传输。</string>
+    <string name="about_tap_hint">连续点击图标 10 次进入管理员模式</string>
+    <string name="about_admin_on">已开启管理员模式</string>
+    <string name="about_edit">编辑资料</string>
+    <string name="about_login_title">管理员登录</string>
+    <string name="about_login_message">请输入管理员密码（默认 123456）</string>
+    <string name="about_login_wrong">密码错误，请重试</string>
+    <string name="about_login_confirm">登录</string>
+    <string name="about_save">保存</string>
+    <string name="about_author_label">作者名称</string>
+    <string name="about_desc_label">简介</string>
+    <string name="about_logout">退出管理员</string>
+    <string name="about_password_default">123456</string>
+
+    <!-- hotspot module: loading / connected strings referenced by MainActivity -->
+    <string name="connected_hint">已连接</string>
+    <string name="state_loading_open">正在开启热点…</string>
+    <string name="state_loading_close">正在关闭热点…</string>
+    <string name="dialog_close">关闭</string>
+
+    <!-- text transfer (文本互传) -->
+    <string name="text_nav">文本</string>
+    <string name="text_title">文本互传</string>
+    <string name="text_send_label">发送到手机</string>
+    <string name="text_send_hint">输入要发送到手机的文字</string>
+    <string name="text_send_btn">发送</string>
+    <string name="text_sent">已发送到手机</string>
+    <string name="text_recv_label">手机发来</string>
+    <string name="text_recv_empty">手机暂未发送文字</string>
+    <string name="text_recv_new">收到手机发来的文字</string>
 </resources>

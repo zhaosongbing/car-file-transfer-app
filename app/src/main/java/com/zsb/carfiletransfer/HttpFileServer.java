@@ -56,6 +56,11 @@ public class HttpFileServer {
         void onTransferProgress(String name, long received, long size);
     }
 
+    /** Fired on the car side when the phone pushes a text snippet. */
+    public interface TextListener {
+        void onTextReceived(String text);
+    }
+
     /** How far to walk up when the preferred port is already taken. */
     private static final int PORT_SCAN = 20;
 
@@ -69,6 +74,12 @@ public class HttpFileServer {
     private final String portalPage;
     private final String deviceName;
     private final CopyOnWriteArrayList<ReceiveListener> listeners = new CopyOnWriteArrayList<ReceiveListener>();
+    private final CopyOnWriteArrayList<TextListener> textListeners = new CopyOnWriteArrayList<TextListener>();
+
+    /** car -> phone: the latest text the car pushed, polled by the phone portal. */
+    private volatile String textToPhone = "";
+    /** phone -> car: the latest text the phone pushed, surfaced to the car UI. */
+    private volatile String textToCar = "";
 
     private ServerSocket serverSocket;
     private ExecutorService pool;
@@ -84,6 +95,34 @@ public class HttpFileServer {
 
     public void addListener(ReceiveListener l) {
         listeners.add(l);
+    }
+
+    public void addTextListener(TextListener l) {
+        textListeners.add(l);
+    }
+
+    // ---------------------------------------------------------- text relay
+
+    /** Car pushes text destined for the phone; the phone portal polls it. */
+    public void pushTextToPhone(String text) {
+        textToPhone = text == null ? "" : text;
+    }
+
+    /** Phone pushes text destined for the car; fires the car UI listener. */
+    public void pushTextToCar(String text) {
+        textToCar = text == null ? "" : text;
+        for (TextListener l : textListeners) {
+            try {
+                l.onTextReceived(text == null ? "" : text);
+            } catch (Throwable t) {
+                Log.w(TAG, "text listener: " + t.getMessage());
+            }
+        }
+    }
+
+    /** Read the latest car -> phone text; idempotent for the portal poll. */
+    public String peekTextToPhone() {
+        return textToPhone == null ? "" : textToPhone;
     }
 
     /**
@@ -220,6 +259,8 @@ public class HttpFileServer {
                             repo.listJson().toString().getBytes("UTF-8"), head);
                 } else if (path.equals("/download")) {
                     serveFile(sock, repo.get(queryValue(query, "name")), headers, head);
+                } else if (path.equals("/text")) {
+                    handleTextGet(query, head, sock);
                 } else {
                     writeResponse(sock, 200, "OK", "text/html; charset=utf-8",
                             portalPage.getBytes("UTF-8"), head);
@@ -239,6 +280,8 @@ public class HttpFileServer {
                 } catch (Exception ignored) {
                 }
                 saveUpload(body, chunked ? -1L : len, queryValue(query, "name"), sock);
+            } else if ("POST".equalsIgnoreCase(method) && path.equals("/text")) {
+                handleTextPost(raw, headers, query, sock);
             } else {
                 writeResponse(sock, 404, "Not Found", "text/plain",
                         "404".getBytes("UTF-8"), false);
@@ -270,6 +313,56 @@ public class HttpFileServer {
             }
         }
         return null;
+    }
+
+    private void handleTextGet(String query, boolean head, Socket sock) throws IOException {
+        String to = queryValue(query, "to");
+        String body;
+        if ("phone".equals(to)) body = peekTextToPhone();
+        else if ("car".equals(to)) body = textToCar == null ? "" : textToCar;
+        else body = "";
+        writeResponse(sock, 200, "OK", "text/plain; charset=utf-8",
+                body.getBytes("UTF-8"), head);
+    }
+
+    private void handleTextPost(InputStream raw, Map<String, String> headers,
+                                String query, Socket sock) throws IOException {
+        String to = queryValue(query, "to");
+        String te = headers.get("transfer-encoding");
+        boolean chunked = te != null && te.toLowerCase(Locale.US).contains("chunked");
+        InputStream body = chunked ? new ChunkedInputStream(raw) : raw;
+        long len = -1L;
+        try {
+            len = Long.parseLong(headers.get("content-length"));
+        } catch (Exception ignored) {
+        }
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        long total = 0L;
+        if (len > 0L) {
+            while (total < len) {
+                int n = body.read(buf, 0, (int) Math.min(buf.length, len - total));
+                if (n < 0) break;
+                bos.write(buf, 0, n);
+                total += n;
+            }
+        } else {
+            int n;
+            while ((n = body.read(buf)) > 0 && total < 262144L) {
+                bos.write(buf, 0, n);
+                total += n;
+            }
+        }
+        String text = new String(bos.toByteArray(), "UTF-8");
+        if ("phone".equals(to)) pushTextToPhone(text);
+        else pushTextToCar(text);
+        JSONObject o = new JSONObject();
+        try {
+            o.put("ok", true);
+        } catch (Exception ignored) {
+        }
+        writeResponse(sock, 200, "OK", "application/json; charset=utf-8",
+                o.toString().getBytes("UTF-8"), false);
     }
 
     // ---------------------------------------------------------------- download

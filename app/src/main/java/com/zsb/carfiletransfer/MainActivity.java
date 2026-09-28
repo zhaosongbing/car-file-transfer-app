@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -52,6 +53,10 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.widget.ImageView;
+
 /**
  * Car-side UI.
  *
@@ -95,6 +100,8 @@ public class MainActivity extends Activity {
     private static final int PAGE_LIST = 1;
     private static final int PAGE_DETAIL = 2;
     private static final int PAGE_RECEIVE = 3;
+    private static final int PAGE_ABOUT = 4;
+    private static final int PAGE_TEXT = 5;
 
     // ---- responsive tokens ----
     private MiuixWindowSizeClass wsc;
@@ -112,25 +119,55 @@ public class MainActivity extends Activity {
     private LinearLayout pageList;
     private LinearLayout pageDetail;
     private LinearLayout pageReceive;
+    private LinearLayout pageAbout;
     private int currentPage = PAGE_HOME;
 
-    // home
+    // ---- 热点直连 module: a single source of truth so refreshes never flicker
+    private enum ModuleState { LOADING, IDLE, READY, CONNECTED }
+
+    /** Last state applied to the module views; only re-render on real change. */
+    private ModuleState lastRenderedState = null;
+    private long hotspotUpSince = 0L;
+    private boolean hotspotWasUp = false;
+    private boolean clientConnected = false;
+    private boolean externalWifi = false;
+    private String lastQrPayload = "";
+    private String currentSsid;
+    private String currentPass;
+
+    // QR card (left column)
     private MiuixText qrTitle;
     private MiuixText qrDesc;
     private FrameLayout qrSlot;
     private MiuixQrView qrView;
+    private LinearLayout qrPlaceholder;
+    private View qrLoading;
+    private MiuixText qrPlaceholderText;
+    private MiuixText qrHint;
+    private LinearLayout qrActionRow;
+    private MiuixButton seeCodeBtn;
+    private MiuixButton copyAddrBtn;
+
+    // status card (right column): account / password + connected state
     private TextView statusDot;
-    /** Status card line 1 / line 2: the hotspot's SSID and password. */
-    private MiuixText statusTitle;
-    private MiuixText statusSub;
+    private MiuixText statusHeader;
+    private LinearLayout credBlock;
+    private MiuixText accValue;
+    private MiuixText passValue;
+    private LinearLayout connectedBlock;
+    private MiuixText connectedTitle;
+    private MiuixText connectedSub;
+    private LinearLayout loadingBlock;
+    private MiuixText loadingText;
+    private MiuixButton btnHotspot;
+
+    // stats & recent (unchanged)
     private MiuixText statCount;
     private MiuixText statSize;
     private MiuixText statUnit;
     private LinearLayout recentBox;
     private TextView adbDot;
     private MiuixText adbText;
-    private MiuixTabRow qrModeRow;
-    private MiuixButton btnHotspot;
 
     // list
     private MiuixText countBadge;
@@ -215,6 +252,44 @@ public class MainActivity extends Activity {
     private int filterIndex = 0;
     private boolean connectDialogShown = false;
 
+    // about page
+    private long aboutTapStart = 0L;
+    private int aboutTapCount = 0;
+    private boolean adminLoggedIn = false;
+    private MiuixText aboutAuthor;
+    private MiuixText aboutDesc;
+    private MiuixText aboutVersion;
+
+    // about page extra views
+    private ImageView aboutIcon;
+    private ImageView aboutCover;
+    private LinearLayout aboutAdminRow;
+    private MiuixButton aboutEditBtn;
+    private MiuixButton aboutLogoutBtn;
+
+    // text transfer page
+    private LinearLayout pageText;
+    private MiuixText textRecvValue;
+    private MiuixTextField textSendInput;
+
+    /** Receives text the phone pushes to the car over the transfer server. */
+    private final HttpFileServer.TextListener textListener =
+            new HttpFileServer.TextListener() {
+                public void onTextReceived(final String text) {
+                    ui.post(new Runnable() {
+                        public void run() {
+                            if (textRecvValue != null) {
+                                textRecvValue.setText(text);
+                                textRecvValue.setTone(MiuixText.Tone.PRIMARY);
+                            }
+                            if (currentPage == PAGE_TEXT) {
+                                toast(getString(R.string.text_recv_new));
+                            }
+                        }
+                    });
+                }
+            };
+
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     // ---------------------------------------------------------------- lifecycle
@@ -233,6 +308,7 @@ public class MainActivity extends Activity {
         if (apConfig == null) apConfig = loadManualConfig();
 
         startTransferService();
+        TransferService.addTextListener(textListener);
         requestRuntimePermissions();
 
         buildUi();
@@ -258,11 +334,15 @@ public class MainActivity extends Activity {
         pageList = buildListPage();
         pageDetail = buildDetailPage();
         pageReceive = buildReceivePage();
+        pageAbout = buildAboutPage();
+        pageText = buildTextPage();
 
         root.addView(pageHome, matchParent());
         root.addView(pageList, matchParent());
         root.addView(pageDetail, matchParent());
         root.addView(pageReceive, matchParent());
+        root.addView(pageAbout, matchParent());
+        root.addView(pageText, matchParent());
 
         setContentView(root);
         applySystemBars(root);
@@ -336,6 +416,10 @@ public class MainActivity extends Activity {
             showPage(PAGE_HOME);
         } else if (currentPage == PAGE_RECEIVE) {
             showPage(PAGE_HOME);
+        } else if (currentPage == PAGE_ABOUT) {
+            showPage(PAGE_HOME);
+        } else if (currentPage == PAGE_TEXT) {
+            showPage(PAGE_HOME);
         } else {
             // home page: the first press only warns, a second press within
             // BACK_EXIT_WINDOW_MS really leaves for the launcher
@@ -360,6 +444,8 @@ public class MainActivity extends Activity {
         pageList.setVisibility(page == PAGE_LIST ? View.VISIBLE : View.GONE);
         pageDetail.setVisibility(page == PAGE_DETAIL ? View.VISIBLE : View.GONE);
         pageReceive.setVisibility(page == PAGE_RECEIVE ? View.VISIBLE : View.GONE);
+        pageAbout.setVisibility(page == PAGE_ABOUT ? View.VISIBLE : View.GONE);
+        pageText.setVisibility(page == PAGE_TEXT ? View.VISIBLE : View.GONE);
         if (page == PAGE_LIST) renderList();
         if (page == PAGE_HOME) refreshHome();
         if (page == PAGE_RECEIVE) updateReceiveUi();
@@ -378,6 +464,8 @@ public class MainActivity extends Activity {
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
         bar.setLeading(logoView());
         bar.addActionView(adbPill());
+        bar.addActionView(aboutButton());
+        bar.addActionView(textButton());
         page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
@@ -447,6 +535,120 @@ public class MainActivity extends Activity {
         return pill;
     }
 
+    /** Top-right "关于" entry - opens the About page. */
+    private View aboutButton() {
+        MiuixButton b = new MiuixButton(this, getString(R.string.about_title),
+                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
+        b.setOutlined(true, MiuixTheme.colors().outline);
+        b.setRadiusDp(R_PILL).setPaddingDp(16f, 8f);
+        b.setLabelSizeSp(13f).setLabelWeight(600);
+        b.setLabelColor(MiuixTheme.colors().onSurface);
+        b.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showPage(PAGE_ABOUT);
+            }
+        });
+        return b;
+    }
+
+    /** Top-right "文本" entry - opens the text transfer page. */
+    private View textButton() {
+        MiuixButton b = new MiuixButton(this, getString(R.string.text_nav),
+                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
+        b.setOutlined(true, MiuixTheme.colors().outline);
+        b.setRadiusDp(R_PILL).setPaddingDp(16f, 8f);
+        b.setLabelSizeSp(13f).setLabelWeight(600);
+        b.setLabelColor(MiuixTheme.colors().onSurface);
+        b.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showPage(PAGE_TEXT);
+            }
+        });
+        return b;
+    }
+
+    /** 文本互传 page: send text to the phone, and show text the phone sent. */
+    private LinearLayout buildTextPage() {
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(MiuixTheme.colors().background);
+
+        MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.text_title), null);
+        bar.setHeightDp(barH).setPaddingDp(pad, 0f)
+                .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
+        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        page.addView(bar, wrapWidth());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        page.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        scroll.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // send card
+        MiuixCard sendCard = new MiuixCard(this, R_CARD);
+        sendCard.setOutline(MiuixTheme.colors().outline, 1f);
+        sendCard.setContentPaddingDp(24f, 24f, 24f, 24f);
+        content.addView(sendCard, wrapWidth());
+
+        MiuixText sendTitle = new MiuixText(this, getString(R.string.text_send_label),
+                MiuixText.Role.BODY);
+        sendTitle.setSizeSp(16f).setWeight(700);
+        sendCard.addView(sendTitle);
+
+        textSendInput = new MiuixTextField(this, null, getString(R.string.text_send_hint));
+        LinearLayout.LayoutParams siLp = wrapWidth();
+        siLp.topMargin = dp(12f);
+        sendCard.addView(textSendInput, siLp);
+
+        MiuixButton sendBtn = new MiuixButton(this, getString(R.string.text_send_btn),
+                MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
+        sendBtn.setRadiusDp(R_PILL).setPaddingDp(26f, 12f);
+        LinearLayout.LayoutParams sbLp = wrapContent();
+        sbLp.topMargin = dp(16f);
+        sendCard.addView(sendBtn, sbLp);
+        sendBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                String t = textSendInput.getText();
+                if (t == null || t.length() == 0) {
+                    toast(getString(R.string.copy_empty));
+                    return;
+                }
+                TransferService.pushTextToPhone(t);
+                toast(getString(R.string.text_sent));
+            }
+        });
+
+        // receive card
+        MiuixCard recvCard = new MiuixCard(this, R_CARD);
+        recvCard.setOutline(MiuixTheme.colors().outline, 1f);
+        recvCard.setContentPaddingDp(24f, 24f, 24f, 24f);
+        LinearLayout.LayoutParams rcLp = wrapWidth();
+        rcLp.topMargin = dp(24f);
+        content.addView(recvCard, rcLp);
+
+        MiuixText recvTitle = new MiuixText(this, getString(R.string.text_recv_label),
+                MiuixText.Role.BODY);
+        recvTitle.setSizeSp(16f).setWeight(700);
+        recvCard.addView(recvTitle);
+
+        textRecvValue = new MiuixText(this, getString(R.string.text_recv_empty),
+                MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
+        textRecvValue.setSizeSp(14f).setWeight(400);
+        textRecvValue.setSingleLine(false);
+        LinearLayout.LayoutParams rvLp = wrapWidth();
+        rvLp.topMargin = dp(12f);
+        textRecvValue.setLayoutParams(rvLp);
+        recvCard.addView(textRecvValue);
+
+        return page;
+    }
+
     private View buildQrCard() {
         MiuixCard card = new MiuixCard(this, R_QR_CARD);
         card.setOutline(MiuixTheme.colors().outline, 1f);
@@ -456,14 +658,14 @@ public class MainActivity extends Activity {
                 twoPane ? dp(qrCardW) : ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        qrTitle = new MiuixText(this, getString(R.string.qr_wait_title),
+        qrTitle = new MiuixText(this, getString(R.string.qr_idle_title),
                 MiuixText.Role.SUBTITLE);
         qrTitle.setSizeSp(wsc.isCompact() ? 17f : 20f).setWeight(700);
         qrTitle.setGravity(Gravity.CENTER_HORIZONTAL);
         qrTitle.setSingleLine(false);
         card.addView(qrTitle);
 
-        qrDesc = new MiuixText(this, getString(R.string.qr_wait_desc),
+        qrDesc = new MiuixText(this, getString(R.string.qr_idle_desc),
                 MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
         qrDesc.setSizeSp(wsc.isCompact() ? 12f : 14f).setWeight(400);
         qrDesc.setSingleLine(false);
@@ -482,22 +684,88 @@ public class MainActivity extends Activity {
         qLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(qrSlot, qLp);
 
-        // the code switcher sits directly under the QR code again: hotspot
-        // join code on the left, transfer address code on the right
-        qrModeRow = new MiuixTabRow(this, new String[]{
-                getString(R.string.qr_mode_wifi), getString(R.string.qr_mode_addr)}, qrMode);
-        qrModeRow.setChipStyle(true);
-        qrModeRow.setOnTabSelectedListener(new MiuixTabRow.OnTabSelectedListener() {
-            public void onTabSelected(int index, String title) {
-                qrMode = index;
-                refreshQr();
+        // the QR itself (transfer address code) - shown only when a device is
+        // connected, otherwise the placeholder below stays visible
+        qrView = new MiuixQrView(this, qrSize);
+        qrView.setVisibility(View.GONE);
+        qrSlot.addView(qrView, new FrameLayout.LayoutParams(
+                dp(qrSize), dp(qrSize), Gravity.CENTER));
+
+        // placeholder: loading spinner + empty-state text (shown while idle /
+        // ready / loading). Kept as a persistent view so refreshes never rebuild
+        // it - only its child visibility / text change.
+        qrPlaceholder = new LinearLayout(this);
+        qrPlaceholder.setOrientation(LinearLayout.VERTICAL);
+        qrPlaceholder.setGravity(Gravity.CENTER);
+        qrPlaceholder.setLayoutParams(new FrameLayout.LayoutParams(
+                dp(qrSize), dp(qrSize), Gravity.CENTER));
+        qrLoading = spinnerView();
+        LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(
+                dp(36f), dp(36f));
+        qrLoading.setLayoutParams(spLp);
+        qrPlaceholder.addView(qrLoading);
+        qrPlaceholderText = new MiuixText(this, getString(R.string.state_ready_desc),
+                MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
+        qrPlaceholderText.setSizeSp(wsc.isCompact() ? 13f : 15f).setWeight(400);
+        qrPlaceholderText.setSingleLine(false);
+        qrPlaceholderText.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams ptLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ptLp.topMargin = dp(16f);
+        qrPlaceholderText.setLayoutParams(ptLp);
+        qrPlaceholder.addView(qrPlaceholderText);
+        qrSlot.addView(qrPlaceholder);
+
+        // address hint rendered under the QR when connected (always present so
+        // the layout does not jump when switching states)
+        qrHint = new MiuixText(this, "", MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
+        qrHint.setSizeSp(wsc.isCompact() ? 12f : 14f).setWeight(400);
+        qrHint.setSingleLine(false);
+        qrHint.setGravity(Gravity.CENTER_HORIZONTAL);
+        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(
+                dp(Math.min(360f, qrCardW - qrCardPad * 2f)),
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        hLp.topMargin = dp(gapCard);
+        hLp.gravity = Gravity.CENTER_HORIZONTAL;
+        card.addView(qrHint, hLp);
+
+        // action row: "查看连接码" opens the Wi-Fi QR dialog; "复制地址" appears
+        // only when connected
+        qrActionRow = new LinearLayout(this);
+        qrActionRow.setOrientation(LinearLayout.HORIZONTAL);
+        qrActionRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        aLp.topMargin = dp(gapCard);
+        aLp.gravity = Gravity.CENTER_HORIZONTAL;
+        card.addView(qrActionRow, aLp);
+
+        seeCodeBtn = new MiuixButton(this, getString(R.string.see_code),
+                MiuixButton.Size.SMALL, MiuixButton.Color.PRIMARY);
+        seeCodeBtn.setRadiusDp(R_PILL).setPaddingDp(18f, 10f);
+        seeCodeBtn.setLabelSizeSp(14f).setLabelWeight(600);
+        seeCodeBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showHotspotCodeDialog();
             }
         });
-        LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(
+        qrActionRow.addView(seeCodeBtn);
+
+        copyAddrBtn = new MiuixButton(this, getString(R.string.copy_address),
+                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
+        copyAddrBtn.setOutlined(true, MiuixTheme.colors().outline);
+        copyAddrBtn.setRadiusDp(R_PILL).setPaddingDp(18f, 10f);
+        copyAddrBtn.setLabelSizeSp(14f).setLabelWeight(600);
+        LinearLayout.LayoutParams caLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mLp.topMargin = dp(gapCard);
-        mLp.gravity = Gravity.CENTER_HORIZONTAL;
-        card.addView(qrModeRow, mLp);
+        caLp.leftMargin = dp(12f);
+        copyAddrBtn.setLayoutParams(caLp);
+        copyAddrBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                copyAddress();
+            }
+        });
+        qrActionRow.addView(copyAddrBtn);
 
         MiuixText tip = new MiuixText(this, getString(R.string.network_tip),
                 MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
@@ -515,45 +783,129 @@ public class MainActivity extends Activity {
         return card;
     }
 
+    /** Small indeterminate spinner, tinted with the primary colour. */
+    private View spinnerView() {
+        return new SpinnerView(this, 36f);
+    }
+
+    private static final class SpinnerView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final long started = System.currentTimeMillis();
+
+        private SpinnerView(Context c, float sizeDp) {
+            super(c);
+            paint.setColor(MiuixTheme.colors().primary);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeWidth(MiuixTheme.dp(c, 3f));
+        }
+
+        @Override
+        protected void onMeasure(int wSpec, int hSpec) {
+            int s = MiuixTheme.dp(getContext(), 36f);
+            setMeasuredDimension(s, s);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float cx = getWidth() / 2f;
+            float cy = getHeight() / 2f;
+            float r = Math.min(getWidth(), getHeight()) / 2f - MiuixTheme.dp(getContext(), 2f);
+            float a0 = ((System.currentTimeMillis() - started) / 4f) % 360f;
+            canvas.drawArc(cx - r, cy - r, cx + r, cy + r, a0, 300f, false, paint);
+            postInvalidateDelayed(16);
+        }
+    }
+
     private View buildSideColumn() {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
 
-        // 1 - connection status + hotspot button
+        // 1 - 热点直连 status card: account / password + connected state
         MiuixCard status = new MiuixCard(this, R_CARD);
         status.setCardBackground(MiuixTheme.colors().surfaceContainer);
         status.setContentPaddingDp(24f, 24f, 24f, 24f);
         status.setOrientation(LinearLayout.HORIZONTAL);
-        status.setGravity(Gravity.CENTER_VERTICAL);
+        status.setGravity(Gravity.TOP);
         col.addView(status, wrapWidth());
 
         LinearLayout left = new LinearLayout(this);
-        left.setOrientation(LinearLayout.HORIZONTAL);
-        left.setGravity(Gravity.CENTER_VERTICAL);
+        left.setOrientation(LinearLayout.VERTICAL);
         left.setLayoutParams(new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         status.addView(left);
 
+        // header row: status dot + module title
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(Gravity.CENTER_VERTICAL);
+        headRow.setLayoutParams(wrapWidth());
+        left.addView(headRow);
+
         statusDot = new TextView(this);
         statusDot.setBackground(MiuixTheme.rounded(MiuixTheme.colors().success, dp(5f)));
-        left.addView(statusDot, new LinearLayout.LayoutParams(dp(10f), dp(10f)));
+        headRow.addView(statusDot, new LinearLayout.LayoutParams(dp(10f), dp(10f)));
 
-        LinearLayout textCol = new LinearLayout(this);
-        textCol.setOrientation(LinearLayout.VERTICAL);
-        left.addView(textCol, marginLeft(12f));
-
-        // the "ready" slot now carries the hotspot's own credentials
-        statusTitle = new MiuixText(this, apSsidText(),
+        statusHeader = new MiuixText(this, getString(R.string.app_title),
                 MiuixText.Role.BODY);
-        statusTitle.setSizeSp(16f).setWeight(600);
-        statusTitle.setSingleLine(true);
-        textCol.addView(statusTitle);
+        statusHeader.setSizeSp(16f).setWeight(700);
+        statusHeader.setLayoutParams(marginLeft(12f));
+        headRow.addView(statusHeader);
 
-        statusSub = new MiuixText(this, apPassText(),
-                MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
-        statusSub.setSizeSp(13f).setWeight(400);
-        statusSub.setSingleLine(true);
-        textCol.addView(statusSub);
+        // credential block: account + password, each wrapping fully and with a
+        // one-click copy affordance
+        credBlock = new LinearLayout(this);
+        credBlock.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams cbLp = wrapWidth();
+        cbLp.topMargin = dp(16f);
+        credBlock.setLayoutParams(cbLp);
+        left.addView(credBlock);
+        credBlock.addView(buildCredentialRow(true));
+        LinearLayout.LayoutParams prLp = wrapWidth();
+        prLp.topMargin = dp(12f);
+        credBlock.addView(buildCredentialRow(false), prLp);
+
+        // connected block: replaces the credentials when a device is linked
+        connectedBlock = new LinearLayout(this);
+        connectedBlock.setOrientation(LinearLayout.VERTICAL);
+        connectedBlock.setVisibility(View.GONE);
+        LinearLayout.LayoutParams cLp = wrapWidth();
+        cLp.topMargin = dp(16f);
+        connectedBlock.setLayoutParams(cLp);
+        left.addView(connectedBlock);
+
+        connectedTitle = new MiuixText(this, getString(R.string.connected_hint),
+                MiuixText.Role.SUBTITLE);
+        connectedTitle.setSizeSp(18f).setWeight(700);
+        connectedTitle.setTone(MiuixText.Tone.SUCCESS);
+        connectedBlock.addView(connectedTitle);
+
+        connectedSub = new MiuixText(this, getString(R.string.state_connected_desc),
+                MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
+        connectedSub.setSizeSp(13f).setWeight(400);
+        connectedSub.setSingleLine(false);
+        LinearLayout.LayoutParams csLp = wrapWidth();
+        csLp.topMargin = dp(6f);
+        connectedSub.setLayoutParams(csLp);
+        connectedBlock.addView(connectedSub);
+
+        // loading block: shown while the hotspot is being toggled / detected
+        loadingBlock = new LinearLayout(this);
+        loadingBlock.setOrientation(LinearLayout.HORIZONTAL);
+        loadingBlock.setGravity(Gravity.CENTER_VERTICAL);
+        loadingBlock.setVisibility(View.GONE);
+        LinearLayout.LayoutParams lbLp = wrapWidth();
+        lbLp.topMargin = dp(16f);
+        loadingBlock.setLayoutParams(lbLp);
+        left.addView(loadingBlock);
+
+        loadingBlock.addView(spinnerView());
+        loadingText = new MiuixText(this, getString(R.string.state_loading_open),
+                MiuixText.Role.BODY_SMALL);
+        loadingText.setSizeSp(14f).setWeight(500);
+        loadingText.setLayoutParams(marginLeft(12f));
+        loadingBlock.addView(loadingText);
 
         btnHotspot = new MiuixButton(this, getString(R.string.open_hotspot),
                 MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
@@ -574,7 +926,9 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
-        status.addView(btnHotspot, wrapContent());
+        LinearLayout.LayoutParams bLp = wrapContent();
+        bLp.leftMargin = dp(16f);
+        status.addView(btnHotspot, bLp);
 
         // 2 - statistics row
         LinearLayout stats = new LinearLayout(this);
@@ -664,6 +1018,59 @@ public class MainActivity extends Activity {
         recent.addView(recentBox, rbLp);
 
         return col;
+    }
+
+    /**
+     * One account / password line: a label, a value that wraps fully (no
+     * truncation) and a copy affordance. {@code isAccount} selects which
+     * credential the copy button copies.
+     */
+    private LinearLayout buildCredentialRow(final boolean isAccount) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setLayoutParams(wrapWidth());
+
+        MiuixText label = new MiuixText(this,
+                isAccount ? getString(R.string.label_account) : getString(R.string.label_password),
+                MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
+        label.setSizeSp(13f).setWeight(500);
+        label.setLayoutParams(new LinearLayout.LayoutParams(
+                dp(42f), ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(label);
+
+        final MiuixText value = new MiuixText(this, "",
+                MiuixText.Role.BODY);
+        value.setSizeSp(15f).setWeight(600);
+        // fully visible: wrap and keep up to 3 lines, never clip a single line
+        value.setSingleLine(false);
+        value.setMaxLines(3);
+        LinearLayout.LayoutParams vLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        value.setLayoutParams(vLp);
+        row.addView(value);
+        if (isAccount) accValue = value; else passValue = value;
+
+        // stroked icon button, tinted with the primary colour
+        FrameLayout copySlot = new FrameLayout(this);
+        int cs = dp(32f);
+        copySlot.setLayoutParams(new LinearLayout.LayoutParams(cs, cs));
+        copySlot.setBackground(MiuixTheme.rounded(MiuixTheme.colors().surface, dp(R_BLOCK)));
+        MiuixIcon copy = new MiuixIcon(this, MiuixIcon.Shape.COPY, 18f,
+                MiuixTheme.colors().primary);
+        copy.setStrokeDp(2f);
+        copy.setLayoutParams(new FrameLayout.LayoutParams(cs, cs, Gravity.CENTER));
+        copySlot.addView(copy);
+        copySlot.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                if (isAccount) copyText(currentSsid, R.string.copied_account);
+                else copyText(currentPass, R.string.copied_password);
+            }
+        });
+        LinearLayout.LayoutParams cpLp = new LinearLayout.LayoutParams(cs, cs);
+        cpLp.leftMargin = dp(8f);
+        row.addView(copySlot, cpLp);
+        return row;
     }
 
     // ---------------------------------------------------------------- list page
@@ -1960,88 +2367,142 @@ public class MainActivity extends Activity {
         statUnit.setText(space[1]);
         countBadge.setText(String.valueOf(count));
 
-        boolean live = linked || hotspotUp;
-        statusDot.setBackground(MiuixTheme.rounded(
-                live ? MiuixTheme.colors().success : MiuixTheme.colors().outline, dp(5f)));
-        statusTitle.setText(apSsidText());
-        statusSub.setText(apPassText());
-        if (!hotspotBusy) {
+        // single source of truth: derive the 热点直连 state and apply it only
+        // when it actually changes, so refreshes never flicker or rebuild views
+        recomputeModule(false);
+    }
+
+    /**
+     * Re-read the live hotspot / client signals and drive the module. When
+     * {@code emitToasts} is true we surface a one-time notice on the
+     * connected -> disconnected transition (the "断开异常" feedback).
+     */
+    private void recomputeModule(boolean emitToasts) {
+        hotspotUp = softAp.isHotspotUp();
+        if (hotspotUp && !hotspotWasUp) {
+            hotspotUpSince = System.currentTimeMillis();
+        } else if (!hotspotUp) {
+            hotspotUpSince = 0L;
+        }
+        hotspotWasUp = hotspotUp;
+
+        ModuleState ns = deriveState();
+        if (emitToasts && lastRenderedState == ModuleState.CONNECTED
+                && ns != ModuleState.CONNECTED) {
+            toast(getString(R.string.disconnect_error));
+        }
+        applyModuleState(ns);
+    }
+
+    /**
+     * Pure derivation of the 热点直连 module state:
+     *  - LOADING  : the hotspot is being toggled
+     *  - CONNECTED: a device is on our AP (client detected) or the car joined an
+     *              external Wi-Fi (phone's hotspot)
+     *  - READY    : our hotspot is up but no device has joined yet
+     *  - IDLE     : hotspot off and not on another network
+     */
+    private ModuleState deriveState() {
+        if (hotspotBusy) return ModuleState.LOADING;
+        if (hotspotUp) {
+            return clientConnected ? ModuleState.CONNECTED : ModuleState.READY;
+        }
+        if (externalWifi) return ModuleState.CONNECTED;
+        return ModuleState.IDLE;
+    }
+
+    /**
+     * Apply a module state to the existing views. The QR / credential blocks are
+     * persistent - we toggle visibility and update text in place rather than
+     * rebuilding, which is what keeps transitions flicker-free and avoids
+     * redundant layout passes.
+     */
+    private void applyModuleState(ModuleState s) {
+        if (s == null) return;
+        lastRenderedState = s;
+
+        // status dot colour
+        int dot;
+        switch (s) {
+            case CONNECTED: dot = MiuixTheme.colors().success; break;
+            case READY:     dot = MiuixTheme.colors().primary; break;
+            case LOADING:   dot = MiuixTheme.colors().warning; break;
+            default:        dot = MiuixTheme.colors().outline; break;
+        }
+        statusDot.setBackground(MiuixTheme.rounded(dot, dp(5f)));
+
+        // status header text
+        statusHeader.setText(s == ModuleState.CONNECTED
+                ? getString(R.string.connected_hint) : getString(R.string.app_title));
+
+        // which status block is visible
+        boolean showCred = (s == ModuleState.READY || s == ModuleState.IDLE)
+                && apConfig != null && apConfig.isValid();
+        boolean showConnected = (s == ModuleState.CONNECTED);
+        boolean showLoading = (s == ModuleState.LOADING);
+        credBlock.setVisibility(showCred ? View.VISIBLE : View.GONE);
+        connectedBlock.setVisibility(showConnected ? View.VISIBLE : View.GONE);
+        loadingBlock.setVisibility(showLoading ? View.VISIBLE : View.GONE);
+
+        if (showCred) {
+            currentSsid = apConfig.ssid;
+            currentPass = apConfig.isOpen() ? getString(R.string.ap_open) : apConfig.passphrase;
+            accValue.setText(getString(R.string.ap_ssid_value, apConfig.ssid));
+            passValue.setText(getString(R.string.ap_pass_value, currentPass));
+        }
+
+        // hotspot toggle
+        btnHotspot.setEnabled(!showLoading);
+        if (showLoading) {
+            loadingText.setText(hotspotUp ? getString(R.string.state_loading_close)
+                    : getString(R.string.state_loading_open));
+            btnHotspot.setText(hotspotUp ? getString(R.string.hotspot_closing)
+                    : getString(R.string.hotspot_opening));
+        } else {
             btnHotspot.setText(hotspotUp ? getString(R.string.close_hotspot)
                     : getString(R.string.open_hotspot));
         }
-        qrTitle.setText(live ? getString(R.string.qr_ready_title)
-                : getString(R.string.qr_wait_title));
-        qrDesc.setText(live ? getString(R.string.qr_ready_desc)
-                : getString(R.string.qr_wait_desc));
-        qrModeRow.setVisibility(live ? View.VISIBLE : View.GONE);
-        refreshQr();
+
+        // QR card: the transfer address code is shown only when a device is
+        // connected; otherwise the placeholder (loading / empty) is shown.
+        boolean showQr = showConnected;
+        qrTitle.setText(showQr ? getString(R.string.qr_ready_title_conn)
+                : getString(R.string.qr_idle_title));
+        qrDesc.setText(showQr ? getString(R.string.qr_ready_desc_conn)
+                : getString(R.string.qr_idle_desc));
+
+        qrView.setVisibility(showQr ? View.VISIBLE : View.GONE);
+        qrPlaceholder.setVisibility(showQr ? View.GONE : View.VISIBLE);
+        qrLoading.setVisibility(showLoading ? View.VISIBLE : View.GONE);
+
+        if (showQr) {
+            String addr = "http://" + SoftApManager.getApIp() + ":" + serverPort();
+            setQrPayload(addr);
+            qrHint.setText(getString(R.string.addr_label) + "  " + addr);
+        } else {
+            qrHint.setText("");
+            String empty = showLoading ? loadingText.getText().toString()
+                    : getString(R.string.state_ready_desc);
+            if (s == ModuleState.READY && hotspotUpSince > 0
+                    && System.currentTimeMillis() - hotspotUpSince > 30000L) {
+                empty = getString(R.string.state_ready_desc_timeout);
+            }
+            qrPlaceholderText.setText(empty);
+        }
+
+        // action row: "查看连接码" whenever we can build a Wi-Fi QR; "复制地址"
+        // only when connected
+        boolean canShowCode = (apConfig != null && apConfig.isValid()) || hotspotUp;
+        seeCodeBtn.setVisibility(canShowCode ? View.VISIBLE : View.GONE);
+        copyAddrBtn.setVisibility(showQr ? View.VISIBLE : View.GONE);
     }
 
-    private void refreshQr() {
-        if (qrSlot == null) return;
-        qrSlot.removeAllViews();
-        boolean live = linked || hotspotUp;
-        String payload = null;
-        if (live) {
-            payload = qrMode == 0
-                    ? SoftApManager.wifiQrPayload(apConfig)
-                    : "http://" + SoftApManager.getApIp() + ":" + serverPort();
-        }
-        if (payload == null || payload.length() == 0) {
-            qrSlot.addView(placeholderCard());
-            return;
-        }
-        qrView = new MiuixQrView(this, qrSize);
+    /** (Re)render the address QR only when the payload actually changes. */
+    private void setQrPayload(String payload) {
+        if (payload == null) payload = "";
+        if (payload.equals(lastQrPayload)) return;
+        lastQrPayload = payload;
         qrView.setContent(payload);
-        qrSlot.addView(qrView, new FrameLayout.LayoutParams(
-                dp(qrSize), dp(qrSize), Gravity.CENTER));
-    }
-
-    private View placeholderCard() {
-        MiuixCard ph = new MiuixCard(this, 24f);
-        ph.setCardBackground(MiuixTheme.colors().surfaceContainer);
-        ph.setBackground(MiuixTheme.outlined(MiuixTheme.colors().surfaceContainer,
-                MiuixTheme.colors().outline, dp(24f), dp(1f)));
-        ph.setGravity(Gravity.CENTER);
-        ph.setLayoutParams(new FrameLayout.LayoutParams(
-                dp(qrSize), dp(qrSize), Gravity.CENTER));
-
-        View icon = new View(this) {
-            @Override
-            protected void onDraw(Canvas canvas) {
-                super.onDraw(canvas);
-                Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-                float cx = getWidth() / 2f;
-                float cy = getHeight() / 2f;
-                float r = Math.min(getWidth(), getHeight()) * 0.32f;
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(Math.max(2f, getWidth() * 0.06f));
-                p.setColor(MiuixTheme.colors().onSurfaceVariant);
-                canvas.drawArc(cx - r, cy - r, cx + r, cy + r, 200f, 140f, false, p);
-                canvas.drawCircle(cx, cy + r * 0.62f, r * 0.14f, p);
-                p.setColor(MiuixTheme.colors().error);
-                canvas.drawLine(cx - r, cy + r, cx + r, cy - r, p);
-            }
-
-            @Override
-            protected void onMeasure(int wSpec, int hSpec) {
-                setMeasuredDimension(dp(64f), dp(64f));
-            }
-        };
-        ph.addView(icon);
-
-        MiuixText t1 = new MiuixText(this, getString(R.string.not_connected),
-                MiuixText.Role.SUBTITLE);
-        t1.setSizeSp(18f).setWeight(700);
-        t1.setGravity(Gravity.CENTER_HORIZONTAL);
-        ph.addView(t1, marginTop(12f));
-
-        MiuixText t2 = new MiuixText(this, getString(R.string.not_connected_desc),
-                MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
-        t2.setSizeSp(13f).setWeight(400);
-        t2.setGravity(Gravity.CENTER_HORIZONTAL);
-        ph.addView(t2);
-        return ph;
     }
 
     /**
@@ -2107,22 +2568,28 @@ public class MainActivity extends Activity {
         public void run() {
             new Thread(new Runnable() {
                 public void run() {
-                    final AdbManager.AdbStatus s = AdbManager.query();
-                    final boolean ap = softAp.isHotspotUp();
-                    ui.post(new Runnable() {
-                        public void run() {
-                            applyAdbStatus(s);
-                            if (ap != hotspotUp) {
-                                hotspotUp = ap;
-                                SoftApManager.ApConfig live = softAp.liveConfig();
-                                if (live != null && live.isValid()) apConfig = live;
-                                refreshHome();
-                            } else if (ap && currentPage == PAGE_HOME) {
-                                // the AP address is re-read on every refresh anyway
-                                refreshHome();
-                            }
-                        }
-                    });
+            final AdbManager.AdbStatus s = AdbManager.query();
+            final boolean ap = softAp.isHotspotUp();
+            // client detection runs on the worker thread - no permissions, no
+            // reflection: we parse /proc/net/arp for a reachable device on the
+            // AP subnet (phone joined our hotspot), or check whether the car
+            // itself joined an external Wi-Fi (phone's hotspot)
+            final boolean cc = softAp.hasConnectedClient();
+            final boolean ew = softAp.isOnExternalWifi();
+            ui.post(new Runnable() {
+                public void run() {
+                    applyAdbStatus(s);
+                    clientConnected = cc;
+                    externalWifi = ew;
+                    if (ap != hotspotUp) {
+                        hotspotUp = ap;
+                        SoftApManager.ApConfig live = softAp.liveConfig();
+                        if (live != null && live.isValid()) apConfig = live;
+                    }
+                    // single source of truth: derive + apply only on real change
+                    recomputeModule(true);
+                }
+            });
                 }
             }).start();
             ui.postDelayed(adbPoll, 3000L);
@@ -2363,5 +2830,349 @@ public class MainActivity extends Activity {
 
     private void toast(String msg) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+    }
+
+    // ---------------------------------------------------------- copy helpers
+
+    /** Copy arbitrary text to the clipboard with a success toast. */
+    private void copyText(CharSequence text, int toastRes) {
+        if (text == null || text.length() == 0) {
+            toast(getString(R.string.copy_empty));
+            return;
+        }
+        try {
+            ClipboardManager cm = (ClipboardManager)
+                    getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("carfile", text));
+                toast(getString(toastRes));
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        toast(getString(R.string.copy_failed));
+    }
+
+    /** Copy the transfer address (shown only while a device is connected). */
+    private void copyAddress() {
+        String addr = "http://" + SoftApManager.getApIp() + ":" + serverPort();
+        copyText(addr, R.string.copied_address);
+    }
+
+    // ---------------------------------------------------------- hotspot code dialog
+
+    /**
+     * Wi-Fi connection QR, surfaced from the QR card's "查看连接码" button. The
+     * popup reuses the MiuixDialog surface (rounded card + dim mask), is
+     * cancellable so a mask tap dismisses it, and carries an explicit close
+     * button - matching the spec for this dialog.
+     */
+    private void showHotspotCodeDialog() {
+        final SoftApManager.ApConfig cfg = apConfig;
+        if (cfg == null || !cfg.isValid()) {
+            new MiuixDialog.Builder(this)
+                    .setTitle(getString(R.string.see_code))
+                    .setMessage(getString(R.string.state_no_config))
+                    .setWidthDp(420f).setRadiusDp(24f).setPaddingDp(24f)
+                    .setCancelable(true)
+                    .setPositive(getString(R.string.dialog_close), null)
+                    .show();
+            return;
+        }
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        MiuixQrView qr = new MiuixQrView(this, 240f);
+        qr.setContent(wifiQrPayload(cfg));
+        content.addView(qr, new LinearLayout.LayoutParams(dp(240f), dp(240f)));
+
+        MiuixText ssid = new MiuixText(this,
+                getString(R.string.ap_ssid_value, cfg.ssid),
+                MiuixText.Role.BODY, MiuixText.Tone.SECONDARY);
+        ssid.setSizeSp(15f).setWeight(600);
+        ssid.setGravity(Gravity.CENTER_HORIZONTAL);
+        ssid.setLayoutParams(marginTop(16f));
+        content.addView(ssid);
+
+        MiuixText pass = new MiuixText(this,
+                getString(R.string.ap_pass_value,
+                        cfg.isOpen() ? getString(R.string.ap_open) : cfg.passphrase),
+                MiuixText.Role.BODY_SMALL, MiuixText.Tone.TERTIARY);
+        pass.setSizeSp(13f).setWeight(400);
+        pass.setSingleLine(false);
+        pass.setGravity(Gravity.CENTER_HORIZONTAL);
+        pass.setLayoutParams(marginTop(6f));
+        content.addView(pass);
+
+        MiuixText hint = new MiuixText(this, getString(R.string.qr_idle_desc),
+                MiuixText.Role.MICRO, MiuixText.Tone.TERTIARY);
+        hint.setSizeSp(12f).setWeight(400);
+        hint.setSingleLine(false);
+        hint.setGravity(Gravity.CENTER_HORIZONTAL);
+        hint.setLayoutParams(marginTop(12f));
+        content.addView(hint);
+
+        new MiuixDialog.Builder(this)
+                .setTitle(getString(R.string.see_code))
+                .setContent(content)
+                .setWidthDp(420f).setRadiusDp(24f).setPaddingDp(24f)
+                .setCancelable(true)
+                .setNegative(getString(R.string.dialog_close), null)
+                .show();
+    }
+
+    /** Encode Wi-Fi credentials as a QR the phone camera can join directly. */
+    private static String wifiQrPayload(SoftApManager.ApConfig cfg) {
+        String ssid = cfg.ssid == null ? "" : cfg.ssid;
+        if (cfg.isOpen()) {
+            return "WIFI:T:nopass;S:" + esc(ssid) + ";;";
+        }
+        String auth = (cfg.passphrase != null && cfg.passphrase.length() >= 8)
+                ? "WPA" : "WEP";
+        return "WIFI:T:" + auth + ";S:" + esc(ssid)
+                + ";P:" + esc(cfg.passphrase) + ";;";
+    }
+
+    private static String esc(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+                .replace("\"", "\\\"").replace(":", "\\:").replace("\n", "");
+    }
+
+    // ---------------------------------------------------------- about page
+
+    private LinearLayout buildAboutPage() {
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(MiuixTheme.colors().background);
+
+        MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.about_title), null);
+        bar.setHeightDp(barH).setPaddingDp(pad, 0f)
+                .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
+        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        page.addView(bar, wrapWidth());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        page.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER_HORIZONTAL);
+        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        scroll.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setGravity(Gravity.CENTER_HORIZONTAL);
+        int colW = twoPane ? dp(440f) : ViewGroup.LayoutParams.MATCH_PARENT;
+        column.setLayoutParams(new LinearLayout.LayoutParams(
+                colW, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(column);
+
+        aboutIcon = new ImageView(this);
+        aboutIcon.setImageResource(R.mipmap.ic_launcher);
+        int iconSize = dp(wsc.isCompact() ? 88f : 112f);
+        aboutIcon.setLayoutParams(new LinearLayout.LayoutParams(iconSize, iconSize));
+        aboutIcon.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                onAboutIconTap();
+            }
+        });
+        column.addView(aboutIcon);
+
+        MiuixText name = new MiuixText(this, getString(R.string.app_name),
+                MiuixText.Role.TITLE);
+        name.setSizeSp(26f).setWeight(700);
+        name.setLayoutParams(marginTop(16f));
+        column.addView(name);
+
+        aboutVersion = new MiuixText(this, getString(R.string.about_version, versionName()),
+                MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
+        aboutVersion.setSizeSp(14f).setWeight(500);
+        aboutVersion.setLayoutParams(marginTop(6f));
+        column.addView(aboutVersion);
+
+        String[] prefs = loadAboutPrefs();
+
+        aboutAuthor = new MiuixText(this, prefs[0], MiuixText.Role.BODY);
+        aboutAuthor.setSizeSp(15f).setWeight(600);
+        aboutAuthor.setGravity(Gravity.CENTER_HORIZONTAL);
+        aboutAuthor.setLayoutParams(marginTop(20f));
+        column.addView(aboutAuthor);
+
+        aboutDesc = new MiuixText(this, prefs[1],
+                MiuixText.Role.BODY_SMALL, MiuixText.Tone.SECONDARY);
+        aboutDesc.setSizeSp(13f).setWeight(400);
+        aboutDesc.setSingleLine(false);
+        aboutDesc.setGravity(Gravity.CENTER_HORIZONTAL);
+        LinearLayout.LayoutParams adLp = wrapWidth();
+        adLp.topMargin = dp(8f);
+        aboutDesc.setLayoutParams(adLp);
+        column.addView(aboutDesc);
+
+        aboutCover = new ImageView(this);
+        aboutCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        aboutCover.setImageResource(R.drawable.about_cover);
+        aboutCover.setBackground(MiuixTheme.rounded(
+                MiuixTheme.colors().surface, dp(R_CARD)));
+        if (Build.VERSION.SDK_INT >= 21) aboutCover.setClipToOutline(true);
+        int covW = twoPane ? dp(392f) : ViewGroup.LayoutParams.MATCH_PARENT;
+        LinearLayout.LayoutParams covLp = new LinearLayout.LayoutParams(covW, dp(140f));
+        covLp.topMargin = dp(20f);
+        aboutCover.setLayoutParams(covLp);
+        column.addView(aboutCover);
+
+        MiuixText hint = new MiuixText(this, getString(R.string.about_tap_hint),
+                MiuixText.Role.MICRO, MiuixText.Tone.TERTIARY);
+        hint.setSizeSp(12f).setWeight(400);
+        hint.setGravity(Gravity.CENTER_HORIZONTAL);
+        hint.setLayoutParams(marginTop(16f));
+        column.addView(hint);
+
+        aboutAdminRow = new LinearLayout(this);
+        aboutAdminRow.setOrientation(LinearLayout.HORIZONTAL);
+        aboutAdminRow.setGravity(Gravity.CENTER);
+        aboutAdminRow.setVisibility(adminLoggedIn ? View.VISIBLE : View.GONE);
+        LinearLayout.LayoutParams arLp = wrapWidth();
+        arLp.topMargin = dp(16f);
+        aboutAdminRow.setLayoutParams(arLp);
+
+        aboutEditBtn = new MiuixButton(this, getString(R.string.about_edit),
+                MiuixButton.Size.SMALL, MiuixButton.Color.PRIMARY);
+        aboutEditBtn.setRadiusDp(R_PILL).setPaddingDp(20f, 10f);
+        aboutEditBtn.setLabelSizeSp(14f).setLabelWeight(600);
+        aboutEditBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showAboutEditDialog();
+            }
+        });
+        aboutAdminRow.addView(aboutEditBtn);
+
+        aboutLogoutBtn = new MiuixButton(this, getString(R.string.about_logout),
+                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
+        aboutLogoutBtn.setOutlined(true, MiuixTheme.colors().outline);
+        aboutLogoutBtn.setRadiusDp(R_PILL).setPaddingDp(20f, 10f);
+        aboutLogoutBtn.setLabelSizeSp(14f).setLabelWeight(600);
+        aboutLogoutBtn.setLabelColor(MiuixTheme.colors().onSurface);
+        LinearLayout.LayoutParams loLp = wrapContent();
+        loLp.leftMargin = dp(12f);
+        aboutLogoutBtn.setLayoutParams(loLp);
+        aboutLogoutBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                adminLoggedIn = false;
+                if (aboutAdminRow != null) aboutAdminRow.setVisibility(View.GONE);
+                toast(getString(R.string.ok));
+            }
+        });
+        aboutAdminRow.addView(aboutLogoutBtn);
+        column.addView(aboutAdminRow);
+
+        return page;
+    }
+
+    /** Ten consecutive taps on the app icon unlock the admin session. */
+    private void onAboutIconTap() {
+        long now = System.currentTimeMillis();
+        if (now - aboutTapStart > 1500L) {
+            aboutTapCount = 0;
+            aboutTapStart = now;
+        }
+        aboutTapCount++;
+        if (aboutTapCount >= 10) {
+            aboutTapCount = 0;
+            if (adminLoggedIn) {
+                toast(getString(R.string.about_admin_on));
+            } else {
+                showAboutAdminLogin();
+            }
+        }
+    }
+
+    private void showAboutAdminLogin() {
+        final MiuixTextField pw = new MiuixTextField(this, "密码", "");
+        new MiuixDialog.Builder(this)
+                .setTitle(getString(R.string.about_login_title))
+                .setMessage(getString(R.string.about_login_message))
+                .setContent(pw)
+                .setWidthDp(420f).setRadiusDp(24f).setPaddingDp(24f)
+                .setCancelable(true)
+                .setNegative(getString(R.string.dialog_close), null)
+                .setPositive(getString(R.string.about_login_confirm),
+                        new MiuixDialog.OnActionListener() {
+                            public void onAction(MiuixDialog d) {
+                                String input = pw.getText();
+                                String expected = getString(R.string.about_password_default);
+                                if (expected.equals(input)) {
+                                    adminLoggedIn = true;
+                                    if (aboutAdminRow != null) {
+                                        aboutAdminRow.setVisibility(View.VISIBLE);
+                                    }
+                                    toast(getString(R.string.about_admin_on));
+                                    d.dismiss();
+                                } else {
+                                    toast(getString(R.string.about_login_wrong));
+                                }
+                            }
+                        })
+                .show();
+    }
+
+    private void showAboutEditDialog() {
+        final MiuixTextField authorField = new MiuixTextField(this,
+                getString(R.string.about_author_label), aboutAuthor.getText().toString());
+        final MiuixTextField descField = new MiuixTextField(this,
+                getString(R.string.about_desc_label), aboutDesc.getText().toString());
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(authorField);
+        LinearLayout.LayoutParams dl = wrapWidth();
+        dl.topMargin = dp(12f);
+        box.addView(descField, dl);
+        new MiuixDialog.Builder(this)
+                .setTitle(getString(R.string.about_edit))
+                .setContent(box)
+                .setWidthDp(420f).setRadiusDp(24f).setPaddingDp(24f)
+                .setCancelable(true)
+                .setNegative(getString(R.string.dialog_close), null)
+                .setPositive(getString(R.string.about_save),
+                        new MiuixDialog.OnActionListener() {
+                            public void onAction(MiuixDialog d) {
+                                String a = authorField.getText();
+                                String ds = descField.getText();
+                                if (a.length() == 0) a = getString(R.string.about_author_default);
+                                if (ds.length() == 0) ds = getString(R.string.about_desc_default);
+                                saveAboutPrefs(a, ds);
+                                if (aboutAuthor != null) aboutAuthor.setText(a);
+                                if (aboutDesc != null) aboutDesc.setText(ds);
+                                toast(getString(R.string.ok));
+                                d.dismiss();
+                            }
+                        })
+                .show();
+    }
+
+    private String[] loadAboutPrefs() {
+        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        String a = sp.getString("about_author", getString(R.string.about_author_default));
+        String d = sp.getString("about_desc", getString(R.string.about_desc_default));
+        return new String[]{a, d};
+    }
+
+    private void saveAboutPrefs(String a, String d) {
+        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        sp.edit().putString("about_author", a).putString("about_desc", d).apply();
+    }
+
+    private String versionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "9.0";
+        }
     }
 }

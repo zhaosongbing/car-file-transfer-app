@@ -93,6 +93,12 @@
   .spacer{height:88px}
   .hidden{display:none !important}
   input[type=file]{display:none}
+  .tarea{width:100%;min-height:96px;border-radius:var(--r-sm);border:1px solid var(--line);
+         background:#fff;padding:12px 14px;font-size:14px;color:var(--ink);
+         font-family:inherit;resize:vertical;box-sizing:border-box}
+  .tarea:focus{outline:none;border-color:var(--blue)}
+  .tbox{background:#fff;border-radius:var(--r-sm);padding:14px 16px;word-break:break-all;
+        font-size:14px;color:var(--ink);min-height:48px;white-space:pre-wrap}
 </style>
 </head>
 <body>
@@ -110,6 +116,7 @@
   <div class="tabs">
     <div class="tab on" data-view="send">发送到车机</div>
     <div class="tab" data-view="recv">从车机下载</div>
+    <div class="tab" data-view="text">文本互传</div>
   </div>
 </div>
 
@@ -157,6 +164,15 @@
   </div>
   <div class="list g14" id="recvList"></div>
   <div class="empty hidden" id="recvEmpty">车机上还没有文件<br/>先从「发送到车机」上传几个吧</div>
+</div>
+
+<!-- ============ tab 3: text transfer between phone and car ============ -->
+<div class="wrap g14 hidden" id="viewText">
+  <div class="sec"><div class="st">发送到车机</div></div>
+  <textarea class="tarea" id="textInput" placeholder="输入要发送到车机的文字"></textarea>
+  <button class="btn wide" id="textSendBtn">发送</button>
+  <div class="sec"><div class="st">车机发来</div><div class="sa" id="textCopyBtn">复制</div></div>
+  <div class="tbox" id="textFromCar">车机暂未发送文字</div>
 </div>
 
 <div class="bar" id="bottomBar">
@@ -212,6 +228,7 @@
   /* ---------------------------------------------------------- bottom bar */
   function syncBar(){
     var bar = $('bottomBar'), btn = $('sendBtn');
+    if(tab === 'text'){ bar.classList.add('hidden'); return; }
     bar.classList.remove('hidden');
     if(tab === 'recv'){
       var sel = remote.filter(function(f){return f.on;});
@@ -255,9 +272,44 @@
     $('viewSending').classList.toggle('hidden', !(showSend && sending));
     $('viewDone').classList.toggle('hidden', !(showSend && doneInited && !sending));
     $('viewRecv').classList.toggle('hidden', next !== 'recv');
+    $('viewText').classList.toggle('hidden', next !== 'text');
     if(next === 'recv') loadRemote();
+    if(next === 'text'){ $('bottomBar').classList.add('hidden'); startTextPoll(); }
+    else { stopTextPoll(); }
     syncBar();
   }
+
+  /* ---------------------------------------------------------- text transfer */
+  var textTimer = null;
+  function startTextPoll(){
+    stopTextPoll();
+    textTimer = setInterval(textPoll, 1500);
+    textPoll();
+  }
+  function stopTextPoll(){
+    if(textTimer){ clearInterval(textTimer); textTimer = null; }
+  }
+  function textPoll(){
+    fetch('text?to=phone&t=' + Date.now())
+      .then(function(r){ return r.text(); })
+      .then(function(t){
+        if(t && t.length){ $('textFromCar').textContent = t; }
+      })
+      .catch(function(){});
+  }
+  $('textSendBtn').addEventListener('click', function(){
+    var v = $('textInput').value || '';
+    if(!v.trim()){ alert('请输入要发送的文字'); return; }
+    fetch('text?to=car', {method:'POST', headers:{'Content-Type':'text/plain'}, body:v})
+      .then(function(){ alert('已发送到车机'); })
+      .catch(function(){ alert('发送失败'); });
+  });
+  $('textCopyBtn').addEventListener('click', function(){
+    var t = $('textFromCar').textContent;
+    if(!t || t === '车机暂未发送文字'){ alert('暂无可复制的内容'); return; }
+    if(navigator.clipboard){ navigator.clipboard.writeText(t).then(function(){ alert('已复制'); }); }
+    else { alert(t); }
+  });
   var tabEls = document.querySelectorAll('.tab');
   for(var i=0;i<tabEls.length;i++){
     tabEls[i].addEventListener('click', function(){ setTab(this.getAttribute('data-view')); });
