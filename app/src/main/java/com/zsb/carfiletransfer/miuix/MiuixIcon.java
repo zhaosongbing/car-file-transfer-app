@@ -24,7 +24,13 @@ public class MiuixIcon extends View {
         /** Two overlapping rounded rectangles - the Android copy glyph. */
         COPY,
         /** A cross mark - used for dialog close affordances. */
-        CLOSE
+        CLOSE,
+        /** A handset - the "phone connects to car hotspot" option. */
+        PHONE,
+        /** A car silhouette - the "car connects to phone hotspot" option. */
+        CAR,
+        /** Wi-Fi signal arcs - a generic connection glyph. */
+        WIFI
     }
 
     private final Shape shape;
@@ -104,6 +110,15 @@ public class MiuixIcon extends View {
                 break;
             case CLOSE:
                 drawClose(canvas, cx, cy, u);
+                break;
+            case PHONE:
+                drawPhone(canvas, cx, cy, u);
+                break;
+            case CAR:
+                drawCar(canvas, cx, cy, u);
+                break;
+            case WIFI:
+                drawWifi(canvas, cx, cy, u);
                 break;
             case TRASH:
                 drawTrash(canvas, cx, cy, u);
@@ -194,5 +209,53 @@ public class MiuixIcon extends View {
         float a = u * 0.28f;
         canvas.drawLine(cx - a, cy - a, cx + a, cy + a, paint);
         canvas.drawLine(cx - a, cy + a, cx + a, cy - a, paint);
+    }
+
+    /** A handset glyph: a rounded phone body with a home indicator. */
+    private void drawPhone(Canvas canvas, float cx, float cy, float u) {
+        float w = u * 0.44f;
+        float h = u * 0.70f;
+        float left = cx - w / 2f;
+        float top = cy - h / 2f;
+        float r = u * 0.10f;
+        canvas.drawRoundRect(left, top, left + w, top + h, r, r, paint);
+        float lw = u * 0.18f;
+        canvas.drawLine(cx - lw / 2f, top + h - u * 0.12f,
+                cx + lw / 2f, top + h - u * 0.12f, paint);
+    }
+
+    /** A car silhouette: lower body + cabin + two wheels. */
+    private void drawCar(Canvas canvas, float cx, float cy, float u) {
+        float left = cx - u * 0.32f;
+        float right = cx + u * 0.32f;
+        float bodyTop = cy - u * 0.06f;
+        float bodyBot = cy + u * 0.14f;
+        Path p = new Path();
+        p.moveTo(left, bodyBot);
+        p.lineTo(left + u * 0.04f, bodyTop);
+        p.lineTo(right - u * 0.12f, bodyTop);
+        p.lineTo(right, bodyBot);
+        p.close();
+        canvas.drawPath(p, paint);
+        Path cab = new Path();
+        cab.moveTo(left + u * 0.16f, bodyTop);
+        cab.lineTo(left + u * 0.24f, cy - u * 0.20f);
+        cab.lineTo(right - u * 0.22f, cy - u * 0.20f);
+        cab.lineTo(right - u * 0.12f, bodyTop);
+        canvas.drawPath(cab, paint);
+        float wr = u * 0.08f;
+        canvas.drawCircle(left + u * 0.16f, bodyBot + wr * 0.5f, wr, paint);
+        canvas.drawCircle(right - u * 0.14f, bodyBot + wr * 0.5f, wr, paint);
+    }
+
+    /** Wi-Fi signal: three nested arcs above a centre dot. */
+    private void drawWifi(Canvas canvas, float cx, float cy, float u) {
+        float dotY = cy + u * 0.20f;
+        canvas.drawCircle(cx, dotY, u * 0.045f, paint);
+        for (int i = 0; i < 3; i++) {
+            float r = u * (0.20f + i * 0.09f);
+            canvas.drawArc(cx - r, dotY - r, cx + r, dotY + r,
+                    205f, 130f, false, paint);
+        }
     }
 }

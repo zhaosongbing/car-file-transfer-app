@@ -16,6 +16,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -253,19 +255,12 @@ public class MainActivity extends Activity {
     private boolean connectDialogShown = false;
 
     // about page
-    private long aboutTapStart = 0L;
-    private int aboutTapCount = 0;
-    private boolean adminLoggedIn = false;
     private MiuixText aboutAuthor;
     private MiuixText aboutDesc;
     private MiuixText aboutVersion;
 
-    // about page extra views
+    // about page views
     private ImageView aboutIcon;
-    private ImageView aboutCover;
-    private LinearLayout aboutAdminRow;
-    private MiuixButton aboutEditBtn;
-    private MiuixButton aboutLogoutBtn;
 
     // text transfer page
     private LinearLayout pageText;
@@ -403,8 +398,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         ui.removeCallbacks(adbPoll);
-        // deliberately keeps the foreground service and the hotspot alive so the
-        // transfer channel survives rotation / backgrounding
+        // 退出应用时关闭本机热点，避免热点残留在车机上（前台传输服务仍保留）
+        try {
+            if (softAp != null) softAp.closeHotspot();
+        } catch (Throwable ignored) {
+        }
         super.onDestroy();
     }
 
@@ -515,8 +513,10 @@ public class MainActivity extends Activity {
         LinearLayout pill = new LinearLayout(this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setBackground(MiuixTheme.rounded(
-                MiuixTheme.colors().surfaceContainer, dp(R_PILL)));
+        pill.setBackground(MiuixTheme.pressable(
+                MiuixTheme.colors().surfaceContainer,
+                MiuixTheme.darken(MiuixTheme.colors().surfaceContainer, 0.08f),
+                MiuixTheme.colors().disabledContainer, dp(R_PILL)));
         pill.setPadding(dp(16f), dp(10f), dp(16f), dp(10f));
         pill.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
@@ -561,6 +561,11 @@ public class MainActivity extends Activity {
         b.setLabelColor(MiuixTheme.colors().onSurface);
         b.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
+                // 文本互传需要热点或连接已建立后才能进入
+                if (!clientConnected && !externalWifi) {
+                    toast(getString(R.string.text_need_connect));
+                    return;
+                }
                 showPage(PAGE_TEXT);
             }
         });
@@ -577,6 +582,7 @@ public class MainActivity extends Activity {
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setLeading(backIcon(PAGE_HOME));
         page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
@@ -606,17 +612,27 @@ public class MainActivity extends Activity {
         siLp.topMargin = dp(12f);
         sendCard.addView(textSendInput, siLp);
 
-        MiuixButton sendBtn = new MiuixButton(this, getString(R.string.text_send_btn),
+        final MiuixButton sendBtn = new MiuixButton(this, getString(R.string.text_send_btn),
                 MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
         sendBtn.setRadiusDp(R_PILL).setPaddingDp(26f, 12f);
+        // 输入框为空时发送按钮置灰，内容非空才点亮
+        sendBtn.setEnabled(false);
         LinearLayout.LayoutParams sbLp = wrapContent();
         sbLp.topMargin = dp(16f);
         sendCard.addView(sendBtn, sbLp);
+        textSendInput.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            public void afterTextChanged(Editable s) {
+                sendBtn.setEnabled(s != null && s.toString().trim().length() > 0);
+            }
+        });
         sendBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
+                if (!sendBtn.isEnabled()) return;
                 String t = textSendInput.getText();
                 if (t == null || t.length() == 0) {
-                    toast(getString(R.string.copy_empty));
+                    toast(getString(R.string.text_empty_send));
                     return;
                 }
                 TransferService.pushTextToPhone(t);
@@ -1055,7 +1071,9 @@ public class MainActivity extends Activity {
         FrameLayout copySlot = new FrameLayout(this);
         int cs = dp(32f);
         copySlot.setLayoutParams(new LinearLayout.LayoutParams(cs, cs));
-        copySlot.setBackground(MiuixTheme.rounded(MiuixTheme.colors().surface, dp(R_BLOCK)));
+        copySlot.setBackground(MiuixTheme.pressable(MiuixTheme.colors().surface,
+                MiuixTheme.darken(MiuixTheme.colors().surface, 0.08f),
+                MiuixTheme.colors().disabledContainer, dp(R_BLOCK)));
         MiuixIcon copy = new MiuixIcon(this, MiuixIcon.Shape.COPY, 18f,
                 MiuixTheme.colors().primary);
         copy.setStrokeDp(2f);
@@ -1813,9 +1831,9 @@ public class MainActivity extends Activity {
         final MiuixCard[] options = new MiuixCard[2];
         final int[] selected = new int[]{connectOption};
         options[0] = optionCard(getString(R.string.opt_phone_title),
-                getString(R.string.opt_phone_desc), connectOption == 0);
+                getString(R.string.opt_phone_desc), connectOption == 0, MiuixIcon.Shape.PHONE);
         options[1] = optionCard(getString(R.string.opt_car_title),
-                getString(R.string.opt_car_desc), connectOption == 1);
+                getString(R.string.opt_car_desc), connectOption == 1, MiuixIcon.Shape.CAR);
 
         for (int i = 0; i < 2; i++) {
             final int index = i;
@@ -1862,7 +1880,7 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private MiuixCard optionCard(String title, String desc, boolean checked) {
+    private MiuixCard optionCard(String title, String desc, boolean checked, MiuixIcon.Shape shape) {
         MiuixCard card = new MiuixCard(this, R_ROW);
         card.setOrientation(LinearLayout.HORIZONTAL);
         card.setGravity(Gravity.CENTER_VERTICAL);
@@ -1872,9 +1890,14 @@ public class MainActivity extends Activity {
                 checked ? MiuixTheme.colors().primary : MiuixTheme.colors().outline,
                 dp(R_ROW), dp(1f)));
 
-        View glyph = new View(this);
-        glyph.setBackground(MiuixTheme.rounded(MiuixTheme.colors().primary, dp(6f)));
-        card.addView(glyph, new LinearLayout.LayoutParams(dp(36f), dp(36f)));
+        MiuixIcon glyph = new MiuixIcon(this, shape, 22f, MiuixTheme.colors().primary);
+        FrameLayout iconSlot = new FrameLayout(this);
+        iconSlot.setBackground(MiuixTheme.rounded(MiuixTheme.colors().surfaceContainer, dp(10f)));
+        iconSlot.setLayoutParams(new LinearLayout.LayoutParams(dp(40f), dp(40f)));
+        FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(dp(22f), dp(22f));
+        ilp.gravity = Gravity.CENTER;
+        iconSlot.addView(glyph, ilp);
+        card.addView(iconSlot);
 
         LinearLayout textCol = new LinearLayout(this);
         textCol.setOrientation(LinearLayout.VERTICAL);
@@ -2576,10 +2599,11 @@ public class MainActivity extends Activity {
             // itself joined an external Wi-Fi (phone's hotspot)
             final boolean cc = softAp.hasConnectedClient();
             final boolean ew = softAp.isOnExternalWifi();
+            final boolean seen = TransferService.wasClientSeenRecently(30000L);
             ui.post(new Runnable() {
                 public void run() {
                     applyAdbStatus(s);
-                    clientConnected = cc;
+                    clientConnected = cc || seen;
                     externalWifi = ew;
                     if (ap != hotspotUp) {
                         hotspotUp = ap;
@@ -2952,6 +2976,7 @@ public class MainActivity extends Activity {
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setLeading(backIcon(PAGE_HOME));
         page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
@@ -2978,11 +3003,6 @@ public class MainActivity extends Activity {
         aboutIcon.setImageResource(R.mipmap.ic_launcher);
         int iconSize = dp(wsc.isCompact() ? 88f : 112f);
         aboutIcon.setLayoutParams(new LinearLayout.LayoutParams(iconSize, iconSize));
-        aboutIcon.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                onAboutIconTap();
-            }
-        });
         column.addView(aboutIcon);
 
         MiuixText name = new MiuixText(this, getString(R.string.app_name),
@@ -2997,15 +3017,14 @@ public class MainActivity extends Activity {
         aboutVersion.setLayoutParams(marginTop(6f));
         column.addView(aboutVersion);
 
-        String[] prefs = loadAboutPrefs();
-
-        aboutAuthor = new MiuixText(this, prefs[0], MiuixText.Role.BODY);
+        aboutAuthor = new MiuixText(this, getString(R.string.about_author_default),
+                MiuixText.Role.BODY);
         aboutAuthor.setSizeSp(15f).setWeight(600);
         aboutAuthor.setGravity(Gravity.CENTER_HORIZONTAL);
         aboutAuthor.setLayoutParams(marginTop(20f));
         column.addView(aboutAuthor);
 
-        aboutDesc = new MiuixText(this, prefs[1],
+        aboutDesc = new MiuixText(this, getString(R.string.about_desc_default),
                 MiuixText.Role.BODY_SMALL, MiuixText.Tone.SECONDARY);
         aboutDesc.setSizeSp(13f).setWeight(400);
         aboutDesc.setSingleLine(false);
@@ -3015,157 +3034,22 @@ public class MainActivity extends Activity {
         aboutDesc.setLayoutParams(adLp);
         column.addView(aboutDesc);
 
-        aboutCover = new ImageView(this);
-        aboutCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        aboutCover.setImageResource(R.drawable.about_cover);
-        aboutCover.setBackground(MiuixTheme.rounded(
-                MiuixTheme.colors().surface, dp(R_CARD)));
-        if (Build.VERSION.SDK_INT >= 21) aboutCover.setClipToOutline(true);
-        int covW = twoPane ? dp(392f) : ViewGroup.LayoutParams.MATCH_PARENT;
-        LinearLayout.LayoutParams covLp = new LinearLayout.LayoutParams(covW, dp(140f));
-        covLp.topMargin = dp(20f);
-        aboutCover.setLayoutParams(covLp);
-        column.addView(aboutCover);
-
-        MiuixText hint = new MiuixText(this, getString(R.string.about_tap_hint),
-                MiuixText.Role.MICRO, MiuixText.Tone.TERTIARY);
-        hint.setSizeSp(12f).setWeight(400);
-        hint.setGravity(Gravity.CENTER_HORIZONTAL);
-        hint.setLayoutParams(marginTop(16f));
-        column.addView(hint);
-
-        aboutAdminRow = new LinearLayout(this);
-        aboutAdminRow.setOrientation(LinearLayout.HORIZONTAL);
-        aboutAdminRow.setGravity(Gravity.CENTER);
-        aboutAdminRow.setVisibility(adminLoggedIn ? View.VISIBLE : View.GONE);
-        LinearLayout.LayoutParams arLp = wrapWidth();
-        arLp.topMargin = dp(16f);
-        aboutAdminRow.setLayoutParams(arLp);
-
-        aboutEditBtn = new MiuixButton(this, getString(R.string.about_edit),
-                MiuixButton.Size.SMALL, MiuixButton.Color.PRIMARY);
-        aboutEditBtn.setRadiusDp(R_PILL).setPaddingDp(20f, 10f);
-        aboutEditBtn.setLabelSizeSp(14f).setLabelWeight(600);
-        aboutEditBtn.setOnClickListener(new View.OnClickListener() {
+        // 检查更新：检测 GitHub 是否有新版本，可在线安装
+        MiuixButton updateBtn = new MiuixButton(this, getString(R.string.about_check_update),
+                MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
+        updateBtn.setRadiusDp(R_PILL).setPaddingDp(28f, 14f);
+        updateBtn.setLabelSizeSp(15f).setLabelWeight(700);
+        LinearLayout.LayoutParams uLp = wrapWidth();
+        uLp.topMargin = dp(24f);
+        updateBtn.setLayoutParams(uLp);
+        updateBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                showAboutEditDialog();
+                UpdateManager.check(MainActivity.this, true);
             }
         });
-        aboutAdminRow.addView(aboutEditBtn);
-
-        aboutLogoutBtn = new MiuixButton(this, getString(R.string.about_logout),
-                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
-        aboutLogoutBtn.setOutlined(true, MiuixTheme.colors().outline);
-        aboutLogoutBtn.setRadiusDp(R_PILL).setPaddingDp(20f, 10f);
-        aboutLogoutBtn.setLabelSizeSp(14f).setLabelWeight(600);
-        aboutLogoutBtn.setLabelColor(MiuixTheme.colors().onSurface);
-        LinearLayout.LayoutParams loLp = wrapContent();
-        loLp.leftMargin = dp(12f);
-        aboutLogoutBtn.setLayoutParams(loLp);
-        aboutLogoutBtn.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                adminLoggedIn = false;
-                if (aboutAdminRow != null) aboutAdminRow.setVisibility(View.GONE);
-                toast(getString(R.string.ok));
-            }
-        });
-        aboutAdminRow.addView(aboutLogoutBtn);
-        column.addView(aboutAdminRow);
+        column.addView(updateBtn);
 
         return page;
-    }
-
-    /** Ten consecutive taps on the app icon unlock the admin session. */
-    private void onAboutIconTap() {
-        long now = System.currentTimeMillis();
-        if (now - aboutTapStart > 1500L) {
-            aboutTapCount = 0;
-            aboutTapStart = now;
-        }
-        aboutTapCount++;
-        if (aboutTapCount >= 10) {
-            aboutTapCount = 0;
-            if (adminLoggedIn) {
-                toast(getString(R.string.about_admin_on));
-            } else {
-                showAboutAdminLogin();
-            }
-        }
-    }
-
-    private void showAboutAdminLogin() {
-        final MiuixTextField pw = new MiuixTextField(this, "密码", "");
-        new MiuixDialog.Builder(this)
-                .setTitle(getString(R.string.about_login_title))
-                .setMessage(getString(R.string.about_login_message))
-                .setContent(pw)
-                .setWidthDp(420f).setRadiusDp(24f).setPaddingDp(24f)
-                .setCancelable(true)
-                .setNegative(getString(R.string.dialog_close), null)
-                .setPositive(getString(R.string.about_login_confirm),
-                        new MiuixDialog.OnActionListener() {
-                            public void onAction(MiuixDialog d) {
-                                String input = pw.getText();
-                                String expected = getString(R.string.about_password_default);
-                                if (expected.equals(input)) {
-                                    adminLoggedIn = true;
-                                    if (aboutAdminRow != null) {
-                                        aboutAdminRow.setVisibility(View.VISIBLE);
-                                    }
-                                    toast(getString(R.string.about_admin_on));
-                                    d.dismiss();
-                                } else {
-                                    toast(getString(R.string.about_login_wrong));
-                                }
-                            }
-                        })
-                .show();
-    }
-
-    private void showAboutEditDialog() {
-        final MiuixTextField authorField = new MiuixTextField(this,
-                getString(R.string.about_author_label), aboutAuthor.getText().toString());
-        final MiuixTextField descField = new MiuixTextField(this,
-                getString(R.string.about_desc_label), aboutDesc.getText().toString());
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.addView(authorField);
-        LinearLayout.LayoutParams dl = wrapWidth();
-        dl.topMargin = dp(12f);
-        box.addView(descField, dl);
-        new MiuixDialog.Builder(this)
-                .setTitle(getString(R.string.about_edit))
-                .setContent(box)
-                .setWidthDp(420f).setRadiusDp(24f).setPaddingDp(24f)
-                .setCancelable(true)
-                .setNegative(getString(R.string.dialog_close), null)
-                .setPositive(getString(R.string.about_save),
-                        new MiuixDialog.OnActionListener() {
-                            public void onAction(MiuixDialog d) {
-                                String a = authorField.getText();
-                                String ds = descField.getText();
-                                if (a.length() == 0) a = getString(R.string.about_author_default);
-                                if (ds.length() == 0) ds = getString(R.string.about_desc_default);
-                                saveAboutPrefs(a, ds);
-                                if (aboutAuthor != null) aboutAuthor.setText(a);
-                                if (aboutDesc != null) aboutDesc.setText(ds);
-                                toast(getString(R.string.ok));
-                                d.dismiss();
-                            }
-                        })
-                .show();
-    }
-
-    private String[] loadAboutPrefs() {
-        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
-        String a = sp.getString("about_author", getString(R.string.about_author_default));
-        String d = sp.getString("about_desc", getString(R.string.about_desc_default));
-        return new String[]{a, d};
-    }
-
-    private void saveAboutPrefs(String a, String d) {
-        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
-        sp.edit().putString("about_author", a).putString("about_desc", d).apply();
     }
 
     private String versionName() {

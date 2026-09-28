@@ -108,6 +108,17 @@ public class TransferService extends Service {
         if (s != null && s.server != null) s.server.pushTextToPhone(text);
     }
 
+    /**
+     * Whether any peer hit the HTTP end point within the last {@code withinMs}
+     * ms. Surfaces the server's "client joined" signal to the UI thread, which
+     * uses it (alongside ARP detection) to decide the transfer-ready state.
+     */
+    public static boolean wasClientSeenRecently(long withinMs) {
+        TransferService s = instance;
+        if (s == null || s.server == null) return false;
+        return s.server.wasClientSeenRecently(withinMs);
+    }
+
     // ------------------------------------------------------------ lifecycle
 
     @Override

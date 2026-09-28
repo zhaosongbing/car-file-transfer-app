@@ -85,6 +85,12 @@ public class HttpFileServer {
     private ExecutorService pool;
     private volatile boolean running = false;
 
+    /** Most recent client IP that reached the server, plus when it did. A hit on
+     *  the portal is a much faster "a device joined" signal than waiting for the
+     *  ARP table to populate, so the car UI can flip to CONNECTED at once. */
+    private volatile String lastClientIp = null;
+    private volatile long lastClientTime = 0L;
+
     public HttpFileServer(int port, FileRepository repo, String portalPage, String deviceName) {
         this.port = port;
         this.boundPort = port;
@@ -184,6 +190,17 @@ public class HttpFileServer {
         return boundPort;
     }
 
+    /** True if any peer reached the server within the last {@code withinMs} ms. */
+    public boolean wasClientSeenRecently(long withinMs) {
+        return lastClientTime > 0
+                && (System.currentTimeMillis() - lastClientTime) < withinMs;
+    }
+
+    /** The most recent client IP, or null when no one has connected yet. */
+    public String getLastClientIp() {
+        return lastClientIp;
+    }
+
     private void acceptLoop() {
         while (running) {
             try {
@@ -203,6 +220,13 @@ public class HttpFileServer {
 
     private void handle(Socket sock) {
         try {
+            // Every HTTP hit from the phone is a strong "a client joined" signal;
+            // record it so the UI can flip to CONNECTED immediately instead of
+            // waiting for the ARP table to populate.
+            if (sock.getInetAddress() != null) {
+                lastClientIp = sock.getInetAddress().getHostAddress();
+                if (lastClientIp != null) lastClientTime = System.currentTimeMillis();
+            }
             // Only the request phase is time-boxed. A phone that locks its screen
             // mid-upload stalls TCP for minutes; the old fixed 60 s read timeout
             // then threw in the middle of the body, the request was answered with

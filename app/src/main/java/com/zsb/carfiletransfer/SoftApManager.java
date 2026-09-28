@@ -331,7 +331,22 @@ public class SoftApManager {
         for (String s : AP_SUBNETS) {
             if (ip.startsWith(s)) return true;
         }
-        return false;
+        // Fall back to the live AP gateway address: some boards hand out a
+        // subnet that is not one of the classic tethering ranges, so derive the
+        // client prefix from the IP this device actually bound to. Without this
+        // a phone that joined the hotspot was never recognised (the QR stayed
+        // hidden and the UI kept reporting "未检测到连接").
+        String prefix = apSubnetPrefix();
+        return prefix != null && ip.startsWith(prefix);
+    }
+
+    /** First three octets of the address this device uses as the AP gateway. */
+    private static String apSubnetPrefix() {
+        String ap = getApIp();
+        if (ap == null) return null;
+        int dot = ap.lastIndexOf('.');
+        if (dot <= 0) return null;
+        return ap.substring(0, dot + 1);
     }
 
     /**

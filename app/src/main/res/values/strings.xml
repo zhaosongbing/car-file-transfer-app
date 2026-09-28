@@ -42,8 +42,8 @@
     <string name="no_settings">无法打开设置页</string>
     <string name="ap_detail">热点 %1$s · 密码 %2$s</string>
     <string name="ap_unknown">未读取到车机热点配置</string>
-    <string name="ap_ssid_value">热点 %1$s</string>
-    <string name="ap_pass_value">密码 %1$s</string>
+    <string name="ap_ssid_value">%1$s</string>
+    <string name="ap_pass_value">%1$s</string>
     <string name="ap_pass_unknown">长按热点按钮可手动填写</string>
     <string name="ap_open">无密码</string>
 
@@ -201,7 +201,7 @@
     <string name="about_title">关于</string>
     <string name="about_version">版本 %1$s</string>
     <string name="about_banner">文件互传 · 车机端\n零流量无线互传</string>
-    <string name="about_author_default">作者：ZSB Studio</string>
+    <string name="about_author_default">By:正月拾欢</string>
     <string name="about_desc_default">车机与手机之间极简、安全的文件互传，支持热点直连与局域网传输。</string>
     <string name="about_tap_hint">连续点击图标 10 次进入管理员模式</string>
     <string name="about_admin_on">已开启管理员模式</string>
@@ -215,6 +215,7 @@
     <string name="about_desc_label">简介</string>
     <string name="about_logout">退出管理员</string>
     <string name="about_password_default">123456</string>
+    <string name="about_check_update">检查更新</string>
 
     <!-- hotspot module: loading / connected strings referenced by MainActivity -->
     <string name="connected_hint">已连接</string>
@@ -232,4 +233,6 @@
     <string name="text_recv_label">手机发来</string>
     <string name="text_recv_empty">手机暂未发送文字</string>
     <string name="text_recv_new">收到手机发来的文字</string>
+    <string name="text_need_connect">请先连接热点或建立连接后再使用文本互传</string>
+    <string name="text_empty_send">请输入要发送的内容</string>
 </resources>
