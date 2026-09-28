@@ -67,10 +67,19 @@ public final class UpdateManager {
      * convenience, never a blocker for using the app.
      */
     public static void check(final Activity a, final boolean force) {
+        // immediate acknowledgement so a click never feels dead, and so the user
+        // knows the detection logic actually fired
+        if (force) {
+            Toast.makeText(a, a.getString(R.string.update_checking), Toast.LENGTH_SHORT).show();
+        }
         new Thread(new Runnable() {
             public void run() {
                 final Release r = fetchLatest();
-                if (r == null || r.apkUrl == null) return;
+                if (r == null || r.apkUrl == null) {
+                    // network / parse failure - surface it instead of going silent
+                    if (force) notifyCheckFailed(a);
+                    return;
+                }
                 if (!isNewer(r.version, currentVersion(a))) {
                     if (force) notifyUpToDate(a);
                     return;
@@ -89,6 +98,14 @@ public final class UpdateManager {
         ui.post(new Runnable() {
             public void run() {
                 Toast.makeText(a, a.getString(R.string.update_latest), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private static void notifyCheckFailed(final Activity a) {
+        ui.post(new Runnable() {
+            public void run() {
+                Toast.makeText(a, a.getString(R.string.update_check_failed), Toast.LENGTH_LONG).show();
             }
         });
     }

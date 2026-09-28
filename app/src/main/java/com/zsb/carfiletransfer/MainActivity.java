@@ -72,9 +72,9 @@ public class MainActivity extends Activity {
     // ---- design draft tokens (EXPANDED, 1194 x 834) ----
     private static final float BAR_H_DRAFT = 84f;
     private static final float PAD_DRAFT = 48f;
-    private static final float QR_CARD_W_DRAFT = 420f;
+    private static final float QR_CARD_W_DRAFT = 340f;
     private static final float QR_CARD_PAD_DRAFT = 40f;
-    private static final float QR_SIZE_DRAFT = 300f;
+    private static final float QR_SIZE_DRAFT = 240f;
     private static final float GAP_MAIN_DRAFT = 40f;
     private static final float GAP_CARD_DRAFT = 20f;
     /** Design draft "文件列表区" gap between list rows. */
@@ -376,8 +376,8 @@ public class MainActivity extends Activity {
         gapCard = qrCardW >= 400f ? GAP_CARD_DRAFT : 16f;
 
         float inner = Math.max(160f, qrCardW - qrCardPad * 2f);
-        qrSize = Math.min(sc == MiuixWindowSizeClass.SizeClass.EXPANDED ? QR_SIZE_DRAFT : 260f, inner);
-        qrSize = Math.min(qrSize, Math.max(160f, wsc.getHeightDp() * 0.40f));
+        qrSize = Math.min(sc == MiuixWindowSizeClass.SizeClass.EXPANDED ? QR_SIZE_DRAFT : 200f, inner);
+        qrSize = Math.min(qrSize, Math.max(150f, wsc.getHeightDp() * 0.36f));
     }
 
     @Override
@@ -517,7 +517,7 @@ public class MainActivity extends Activity {
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(twoPane ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        content.setPadding(dp(pad), dp(12f), dp(pad), dp(12f));
         scroll.addView(content, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -961,7 +961,7 @@ public class MainActivity extends Activity {
         stats.setOrientation(LinearLayout.HORIZONTAL);
         stats.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams sLp = wrapWidth();
-        sLp.topMargin = dp(24f);
+        sLp.topMargin = dp(16f);
         col.addView(stats, sLp);
 
         MiuixCard cardCount = new MiuixCard(this, R_CARD);
@@ -1012,7 +1012,7 @@ public class MainActivity extends Activity {
         recent.setOutline(MiuixTheme.colors().outline, 1f);
         recent.setContentPaddingDp(24f, 24f, 24f, 24f);
         LinearLayout.LayoutParams rLp = wrapWidth();
-        rLp.topMargin = dp(24f);
+        rLp.topMargin = dp(16f);
         col.addView(recent, rLp);
 
         LinearLayout head = new LinearLayout(this);

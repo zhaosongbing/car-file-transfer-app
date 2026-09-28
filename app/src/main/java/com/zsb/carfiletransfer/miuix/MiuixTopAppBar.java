@@ -193,11 +193,12 @@ public class MiuixTopAppBar extends LinearLayout {
     }
 
     /**
-     * Solid top-bar background. A plain opaque surface (no frosted / gradient
-     * treatment) so scrolling content is cleanly occluded behind the bar.
+     * Top-bar background identical to the page background so the bar blends into
+     * the page for a unified look. Still opaque, so scrolling content underneath
+     * is cleanly occluded.
      */
     public MiuixTopAppBar setSolidBar() {
-        setBackground(new ColorDrawable(MiuixTheme.colors().surfaceContainer));
+        setBackground(new ColorDrawable(MiuixTheme.colors().background));
         return this;
     }
 
