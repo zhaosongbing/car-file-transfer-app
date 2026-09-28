@@ -6,6 +6,28 @@
 车机端 UI 全部由 **MIUIX 组件库**原生实现（无 WebView 外壳），APK 安装走 **ADB / shell**，
 并支持生成**车机热点二维码**（使用车机原本的账号密码）。
 
+## 下载与 Release 附件命名
+
+每个 Release 同时提供**两个附件，内容完全相同**（同一个安装包，sha256 一致）：
+
+| 附件 | 用途 |
+| --- | --- |
+| `CarFileTransfer-v9.4.0.apk` | 规范名称，**推荐引用**（含版本号，便于区分与缓存） |
+| `CarFileTransfer.apk` | 兼容别名，历史书签 / 二维码 / 外部脚本继续可用，不会被删除 |
+
+命名规则：`CarFileTransfer-<version>.apk`，其中 `<version>` 取 Release tag（如 `v9.4.0`）。
+各历史版本均已补齐，例如 v9.1.0 / v9.2.0 / v9.3.0 / v9.4.0。
+
+最新稳定版（两个链接指向同一个 APK）：
+
+```
+https://github.com/zhaosongbing/car-file-transfer-app/releases/download/v9.4.0/CarFileTransfer-v9.4.0.apk
+https://github.com/zhaosongbing/car-file-transfer-app/releases/download/v9.4.0/CarFileTransfer.apk
+```
+
+应用内「关于 → 检测更新」读取的正是这些 Release 附件，因此该仓库必须保持**公开**（免鉴权即可读取）；
+升级时优先取带版本号的附件，取不到时自动回落到别名链接。
+
 ## 工作流程
 
 1. 车机打开 App → 弹出「选择连接方式」→ 二选一：

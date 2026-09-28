@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -47,6 +48,10 @@ public final class UpdateManager {
     private static final String KEY_SKIPPED = "update_skipped_version";
     private static final String APK_NAME = "CarFileTransfer-update.apk";
 
+    /** Distinguish "slow answer" from "no answer at all". */
+    private static final int CONNECT_TIMEOUT_MS = 10000;
+    private static final int READ_TIMEOUT_MS = 15000;
+
     private static final Handler ui = new Handler(Looper.getMainLooper());
 
     private UpdateManager() {
@@ -62,9 +67,22 @@ public final class UpdateManager {
         public long apkSize;
     }
 
+    /** Why a check failed, so the toast can name the real cause. */
+    public enum Fail {
+        OFFLINE, TIMEOUT, HTTP, NOT_FOUND, FORBIDDEN, RATE_LIMITED, PARSE, NO_ASSET, UNKNOWN
+    }
+
+    /** Outcome of one release query: either a parsed release or the reason it failed. */
+    private static final class Outcome {
+        Release release;
+        Fail fail = Fail.UNKNOWN;
+        int httpCode;
+        String detail;
+    }
+
     /**
-     * Kick off a check. Silent on any network problem - an update prompt is a
-     * convenience, never a blocker for using the app.
+     * Kick off a check. Every failure now carries a reason, so a manual check
+     * never reports a vague error for what was really something else.
      */
     public static void check(final Activity a, final boolean force) {
         // immediate acknowledgement so a click never feels dead, and so the user
@@ -74,12 +92,12 @@ public final class UpdateManager {
         }
         new Thread(new Runnable() {
             public void run() {
-                final Release r = fetchLatest();
-                if (r == null || r.apkUrl == null) {
-                    // network / parse failure - surface it instead of going silent
-                    if (force) notifyCheckFailed(a);
+                final Outcome o = fetchLatest(a);
+                if (o.release == null || o.release.apkUrl == null) {
+                    if (force) notifyCheckFailed(a, o.fail, o.httpCode, o.detail);
                     return;
                 }
+                final Release r = o.release;
                 if (!isNewer(r.version, currentVersion(a))) {
                     if (force) notifyUpToDate(a);
                     return;
@@ -102,32 +120,103 @@ public final class UpdateManager {
         });
     }
 
-    private static void notifyCheckFailed(final Activity a) {
+    private static void notifyCheckFailed(final Activity a, final Fail fail,
+                                          final int httpCode, final String detail) {
         ui.post(new Runnable() {
             public void run() {
-                Toast.makeText(a, a.getString(R.string.update_check_failed), Toast.LENGTH_LONG).show();
+                String msg;
+                switch (fail) {
+                    case OFFLINE:
+                        msg = a.getString(R.string.update_err_offline);
+                        break;
+                    case TIMEOUT:
+                        msg = a.getString(R.string.update_err_timeout);
+                        break;
+                    case NOT_FOUND:
+                        msg = a.getString(R.string.update_err_not_found);
+                        break;
+                    case FORBIDDEN:
+                        msg = a.getString(R.string.update_err_forbidden, httpCode);
+                        break;
+                    case RATE_LIMITED:
+                        msg = a.getString(R.string.update_err_rate_limited);
+                        break;
+                    case PARSE:
+                        msg = a.getString(R.string.update_err_parse);
+                        break;
+                    case NO_ASSET:
+                        msg = a.getString(R.string.update_err_no_asset);
+                        break;
+                    case HTTP:
+                        msg = a.getString(R.string.update_err_http_generic, httpCode);
+                        break;
+                    default:
+                        msg = a.getString(R.string.update_err_unknown,
+                                detail == null ? "unknown" : detail);
+                        break;
+                }
+                Toast.makeText(a, msg, Toast.LENGTH_LONG).show();
             }
         });
     }
 
     // ---------------------------------------------------------------- network
 
-    private static Release fetchLatest() {
-        HttpURLConnection c = null;
+    /**
+     * Query GitHub for the newest release.
+     *
+     * <p>Plain HTTPS against {@link #API} using the platform trust store - no
+     * custom TrustManager, no cleartext fallback, so a hostile network cannot
+     * swap the update metadata.</p>
+     *
+     * <p>Every failure path records <em>why</em> it failed instead of returning
+     * null, which is what previously made every problem look like a network
+     * outage (including a 404 caused by querying a private repository).</p>
+     */
+    private static Outcome fetchLatest(Context c) {
+        Outcome out = new Outcome();
+        if (!isOnline(c)) {
+            out.fail = Fail.OFFLINE;
+            return out;
+        }
+        HttpURLConnection conn = null;
         try {
-            c = (HttpURLConnection) new URL(API).openConnection();
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(15000);
-            c.setRequestMethod("GET");
-            c.setRequestProperty("Accept", "application/vnd.github+json");
-            c.setRequestProperty("User-Agent", "CarFileTransfer");
-            int code = c.getResponseCode();
-            if (code != 200) {
-                Log.i(TAG, "release query returned " + code);
-                return null;
+            conn = (HttpURLConnection) new URL(API).openConnection();
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "application/vnd.github+json");
+            conn.setRequestProperty("User-Agent", "CarFileTransfer");
+            conn.setInstanceFollowRedirects(true);
+
+            int code = conn.getResponseCode();
+            out.httpCode = code;
+            if (code == 404) {                     // private repo, or no releases yet
+                out.fail = Fail.NOT_FOUND;
+                return out;
             }
-            String json = readAll(c.getInputStream());
-            JSONObject o = new JSONObject(json);
+            if (code == 403) {
+                out.fail = Fail.FORBIDDEN;
+                return out;
+            }
+            if (code == 429) {
+                out.fail = Fail.RATE_LIMITED;
+                return out;
+            }
+            if (code != 200) {
+                out.fail = Fail.HTTP;
+                return out;
+            }
+
+            String json = readAll(conn.getInputStream());
+            JSONObject o;
+            try {
+                o = new JSONObject(json);
+            } catch (Exception e) {
+                Log.i(TAG, "release json unreadable: " + e.getMessage());
+                out.fail = Fail.PARSE;
+                return out;
+            }
 
             Release r = new Release();
             r.tag = o.optString("tag_name", "");
@@ -135,30 +224,85 @@ public final class UpdateManager {
             r.name = o.optString("name", r.tag);
             r.notes = o.optString("body", "");
             if (r.notes.length() > 600) r.notes = r.notes.substring(0, 600) + "…";
+            if (r.tag.length() == 0) {
+                out.fail = Fail.PARSE;
+                return out;
+            }
 
+            // Prefer the versioned attachment; the bare name is kept as a
+            // compatibility alias, so either one is a valid download.
+            String versioned = null, any = null;
+            long versionedSize = 0L, anySize = 0L;
             JSONArray assets = o.optJSONArray("assets");
             if (assets != null) {
                 for (int i = 0; i < assets.length(); i++) {
                     JSONObject asset = assets.optJSONObject(i);
                     if (asset == null) continue;
                     String url = asset.optString("browser_download_url", "");
-                    if (url.endsWith(".apk")) {
-                        r.apkUrl = url;
-                        r.apkSize = asset.optLong("size", 0L);
-                        break;
+                    String name = asset.optString("name", "");
+                    long size = asset.optLong("size", 0L);
+                    if (!url.endsWith(".apk")) continue;
+                    if (any == null) {
+                        any = url;
+                        anySize = size;
+                    }
+                    if (name.startsWith("CarFileTransfer-v") && versioned == null) {
+                        versioned = url;
+                        versionedSize = size;
                     }
                 }
             }
-            if (r.apkUrl == null && r.tag.length() > 0) {
+            if (versioned != null) {
+                r.apkUrl = versioned;
+                r.apkSize = versionedSize;
+            } else if (any != null) {
+                r.apkUrl = any;
+                r.apkSize = anySize;
+            } else if (r.tag.length() > 0) {
                 r.apkUrl = "https://github.com/" + OWNER + "/" + REPO
-                        + "/releases/download/" + r.tag + "/CarFileTransfer.apk";
+                        + "/releases/download/" + r.tag + "/CarFileTransfer-" + r.tag + ".apk";
             }
-            return r;
+            if (r.apkUrl == null) {
+                out.fail = Fail.NO_ASSET;
+                return out;
+            }
+            out.release = r;
+            return out;
+        } catch (java.net.SocketTimeoutException e) {
+            Log.i(TAG, "update check timed out");
+            out.fail = Fail.TIMEOUT;
+            return out;
         } catch (Exception e) {
             Log.i(TAG, "update check failed: " + e.getMessage());
-            return null;
+            out.fail = Fail.UNKNOWN;
+            out.detail = e.getMessage();
+            return out;
         } finally {
-            if (c != null) c.disconnect();
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /**
+     * Coarse connectivity probe, only used to separate "the device is offline"
+     * from "the server did not answer". Anything unexpected defers to actually
+     * trying the request.
+     */
+    private static boolean isOnline(Context c) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager)
+                    c.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return true;
+            if (Build.VERSION.SDK_INT >= 23) {
+                android.net.Network n = cm.getActiveNetwork();
+                if (n == null) return false;
+                android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(n);
+                return caps != null && caps.hasCapability(
+                        android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            }
+            android.net.NetworkInfo ni = cm.getActiveNetworkInfo();
+            return ni != null && ni.isConnected();
+        } catch (Throwable t) {
+            return true;
         }
     }
 

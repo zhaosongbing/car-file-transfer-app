@@ -106,6 +106,7 @@ public class SoftApManager {
     public SoftApManager(Context ctx) {
         this.ctx = ctx.getApplicationContext();
         this.wifi = (WifiManager) this.ctx.getSystemService(Context.WIFI_SERVICE);
+        registerSoftApClientWatcher();
     }
 
     // ---------------- system (car unit) configuration ----------------
@@ -293,7 +294,84 @@ public class SoftApManager {
      * with the gateway, so this returns true a moment after the phone connects
      * rather than instantly.</p>
      */
+    /**
+     * True when a station has joined the hotspot this device is running.
+     *
+     * <p>Reading {@code /proc/net/arp} used to be the only source of truth, but
+     * Android 10+ blocks it for ordinary apps. That is exactly why a phone that
+     * had clearly joined the hotspot was never detected: the UI stayed on "未检测到
+     * 连接" and, because the address code was gated on that state, the QR never
+     * appeared either. The answer is now taken from whichever source the running
+     * platform actually allows.</p>
+     *
+     * <ol>
+     *   <li>the platform's own {@code SoftApCallback} station list - authoritative
+     *       and instant, when the reflection is permitted</li>
+     *   <li>the ARP neighbour table, which still works on older levels</li>
+     * </ol>
+     */
     public boolean hasConnectedClient() {
+        return softApClients > 0 || hasArpClientOnApSubnet();
+    }
+
+    /** Station count reported by the platform; -1 while unavailable. */
+    private volatile int softApClients = -1;
+
+    /**
+     * Register {@code WifiManager#registerSoftApCallback} reflectively so the
+     * platform pushes the connected-station count to us. The API is hidden on
+     * many levels and the non-SDK blacklist may refuse it outright, so
+     * everything is guarded: on failure {@link #softApClients} stays -1 and
+     * {@link #hasConnectedClient()} simply falls back to the ARP table.
+     */
+    private void registerSoftApClientWatcher() {
+        if (wifi == null) return;
+        try {
+            final Class<?> cbClass = Class.forName("android.net.wifi.SoftApCallback");
+            Object callback = Proxy.newProxyInstance(
+                    cbClass.getClassLoader(), new Class<?>[]{cbClass},
+                    new InvocationHandler() {
+                        public Object invoke(Object proxy, Method method, Object[] args) {
+                            String name = method.getName();
+                            if (("onConnectedClientsChanged".equals(name)
+                                    || "onClientsChanged".equals(name))
+                                    && args != null && args.length > 0 && args[0] != null) {
+                                int n = 0;
+                                if (args[0] instanceof java.util.Collection) {
+                                    n = ((java.util.Collection<?>) args[0]).size();
+                                } else if (args[0].getClass().isArray()) {
+                                    n = java.lang.reflect.Array.getLength(args[0]);
+                                }
+                                softApClients = n;
+                                Log.i(TAG, "softap stations -> " + n);
+                            }
+                            return null;
+                        }
+                    });
+            Executor exec = new Executor() {
+                public void execute(Runnable command) {
+                    new Thread(command, "softap-callback").start();
+                }
+            };
+            try {
+                // current signature: registerSoftApCallback(Executor, SoftApCallback)
+                Method m = wifi.getClass().getMethod(
+                        "registerSoftApCallback", Executor.class, cbClass);
+                m.invoke(wifi, exec, callback);
+            } catch (NoSuchMethodException e) {
+                // older signature: registerSoftApCallback(SoftApCallback, Handler)
+                Method legacy = wifi.getClass().getMethod(
+                        "registerSoftApCallback", cbClass, Handler.class);
+                legacy.invoke(wifi, callback, new Handler(Looper.getMainLooper()));
+            }
+            Log.i(TAG, "softap client watcher registered");
+        } catch (Throwable t) {
+            Log.i(TAG, "softap client watcher unavailable: " + t);
+        }
+    }
+
+    /** Legacy detection path: the kernel ARP neighbour table. */
+    private boolean hasArpClientOnApSubnet() {
         java.io.BufferedReader r = null;
         try {
             r = new java.io.BufferedReader(new java.io.FileReader("/proc/net/arp"));

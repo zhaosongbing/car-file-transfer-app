@@ -2494,20 +2494,36 @@ public class MainActivity extends Activity {
                     : getString(R.string.open_hotspot));
         }
 
-        // QR card: the transfer address code is shown only when a device is
-        // connected; otherwise the placeholder (loading / empty) is shown.
-        boolean showQr = showConnected;
-        qrTitle.setText(showQr ? getString(R.string.qr_ready_title_conn)
-                : getString(R.string.qr_idle_title));
-        qrDesc.setText(showQr ? getString(R.string.qr_ready_desc_conn)
-                : getString(R.string.qr_idle_desc));
+        // QR card: advertise the transfer address code as soon as the hotspot is
+        // up and we have an address worth advertising.
+        //
+        // It used to be gated on "a client has joined", which is precisely what
+        // made this module unusable from Android 10 onwards: ARP reads are
+        // blocked there, so a phone that had joined the hotspot was never
+        // detected -> the state stayed READY -> the QR carrying the address never
+        // appeared -> the phone could never reach our server -> still undetected.
+        // Advertising the code from READY onwards breaks that cycle: once the
+        // phone opens the address, HttpFileServer records the hit and the next
+        // poll flips the module to CONNECTED.
+        String apIp = transferAddress();
+        boolean showQr = !showLoading && apIp != null;
+        if (showConnected) {
+            qrTitle.setText(getString(R.string.qr_ready_title_conn));
+            qrDesc.setText(getString(R.string.qr_ready_desc_conn));
+        } else if (showQr) {
+            qrTitle.setText(getString(R.string.qr_ready_title));
+            qrDesc.setText(getString(R.string.qr_ready_desc));
+        } else {
+            qrTitle.setText(getString(R.string.qr_idle_title));
+            qrDesc.setText(getString(R.string.qr_idle_desc));
+        }
 
         qrView.setVisibility(showQr ? View.VISIBLE : View.GONE);
         qrPlaceholder.setVisibility(showQr ? View.GONE : View.VISIBLE);
         qrLoading.setVisibility(showLoading ? View.VISIBLE : View.GONE);
 
         if (showQr) {
-            String addr = "http://" + SoftApManager.getApIp() + ":" + serverPort();
+            String addr = "http://" + apIp + ":" + serverPort();
             setQrPayload(addr);
             qrHint.setText(getString(R.string.addr_label) + "  " + addr);
         } else {
@@ -2526,6 +2542,21 @@ public class MainActivity extends Activity {
         boolean canShowCode = (apConfig != null && apConfig.isValid()) || hotspotUp;
         seeCodeBtn.setVisibility(canShowCode ? View.VISIBLE : View.GONE);
         copyAddrBtn.setVisibility(showQr ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * The address a phone should use to reach this device, or null when there is
+     * nothing to advertise yet. Falls back to any private address so the
+     * external-Wi-Fi case (the car joined the phone's hotspot) still works even
+     * when no soft AP interface is bound - previously that could produce the
+     * literal address "http://null:8899".
+     */
+    private String transferAddress() {
+        if (!hotspotUp && !externalWifi) return null;
+        String ip = SoftApManager.getApIp();
+        if (ip == null || ip.length() == 0) ip = SoftApManager.getPreferredIp();
+        if (ip == null || ip.length() == 0) return null;
+        return ip;
     }
 
     /** (Re)render the address QR only when the payload actually changes. */
@@ -2885,10 +2916,14 @@ public class MainActivity extends Activity {
         toast(getString(R.string.copy_failed));
     }
 
-    /** Copy the transfer address (shown only while a device is connected). */
+    /** Copy the transfer address (available whenever the module has one). */
     private void copyAddress() {
-        String addr = "http://" + SoftApManager.getApIp() + ":" + serverPort();
-        copyText(addr, R.string.copied_address);
+        String ip = transferAddress();
+        if (ip == null) {
+            toast(getString(R.string.copy_failed));
+            return;
+        }
+        copyText("http://" + ip + ":" + serverPort(), R.string.copied_address);
     }
 
     // ---------------------------------------------------------- hotspot code dialog

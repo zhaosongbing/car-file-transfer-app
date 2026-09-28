@@ -11,9 +11,32 @@ JAVA="$JDK/bin/java.exe"
 JAVAC="$JDK/bin/javac.exe"
 KEYTOOL="$JDK/bin/keytool.exe"
 
-SDK="$(cd ~/AppData/Local/Android/Sdk && pwd -W)"
-BT="$SDK/build-tools/36.0.0"
-PLAT="$SDK/platforms/android-36"
+# Locate the Android SDK. The default install under AppData can be wiped by
+# disk-cleanup tools, so honour ANDROID_HOME first and fall back through the
+# usual locations rather than assuming one fixed path.
+if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ]; then
+  SDK="$(cd "$ANDROID_HOME" && pwd -W)"
+elif [ -d ~/AppData/Local/Android/Sdk ]; then
+  SDK="$(cd ~/AppData/Local/Android/Sdk && pwd -W)"
+elif [ -d "$PROJ/../.workbuddy/binaries/android-sdk" ]; then
+  SDK="$(cd "$PROJ/../.workbuddy/binaries/android-sdk" && pwd -W)"
+else
+  echo "!! Android SDK not found - set ANDROID_HOME to your SDK directory"
+  exit 1
+fi
+
+# Use whatever build-tools / platform levels are installed instead of pinning a
+# single version, so a missing level never breaks the whole build.
+BT_VER="$(ls "$SDK/build-tools" 2>/dev/null | sort -V | tail -1)"
+PLAT_VER="$(ls "$SDK/platforms" 2>/dev/null | sort -V | tail -1)"
+if [ -z "$BT_VER" ] || [ -z "$PLAT_VER" ]; then
+  echo "!! SDK at $SDK has no build-tools / platforms installed"
+  exit 1
+fi
+echo "SDK=$SDK (build-tools $BT_VER, platform $PLAT_VER)"
+
+BT="$SDK/build-tools/$BT_VER"
+PLAT="$SDK/platforms/$PLAT_VER"
 AAPT2="$BT/aapt2.exe"
 AAPT="$BT/aapt.exe"
 ZIPALIGN="$BT/zipalign.exe"
@@ -42,8 +65,8 @@ echo "== 2. aapt2 link =="
   -A "$SRC/assets" \
   --min-sdk-version 26 \
   --target-sdk-version 36 \
-  --version-code 13 \
-  --version-name 9.4 \
+  --version-code 14 \
+  --version-name 9.5 \
   --java "$OUT/gen"
 
 echo "== 3. javac =="
