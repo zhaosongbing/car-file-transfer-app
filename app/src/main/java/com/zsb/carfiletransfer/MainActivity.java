@@ -117,11 +117,11 @@ public class MainActivity extends Activity {
     private boolean twoPane = true;
 
     private FrameLayout root;
-    private LinearLayout pageHome;
-    private LinearLayout pageList;
-    private LinearLayout pageDetail;
-    private LinearLayout pageReceive;
-    private LinearLayout pageAbout;
+    private FrameLayout pageHome;
+    private FrameLayout pageList;
+    private FrameLayout pageDetail;
+    private FrameLayout pageReceive;
+    private FrameLayout pageAbout;
     private int currentPage = PAGE_HOME;
 
     // ---- 热点直连 module: a single source of truth so refreshes never flicker
@@ -177,7 +177,7 @@ public class MainActivity extends Activity {
     private MiuixTabRow filterRow;
 
     // detail
-    private LinearLayout detailBox;
+    private FrameLayout detailBox;
 
     // ---- receive page ----
     private MiuixText recvName;
@@ -263,7 +263,7 @@ public class MainActivity extends Activity {
     private ImageView aboutIcon;
 
     // text transfer page
-    private LinearLayout pageText;
+    private FrameLayout pageText;
     private MiuixText textRecvValue;
     private MiuixTextField textSendInput;
 
@@ -451,9 +451,48 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- home page
 
-    private LinearLayout buildHomePage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
+    /**
+     * Build a page whose scrollable content slides *under* a frosted top bar.
+     * The bar is overlaid on top of the ScrollView; the first content item is
+     * pushed down by the bar height so it is not hidden initially, and the bar
+     * applies a real-time backdrop blur of whatever is scrolling behind it.
+     *
+     * @param bottomBar  optional control pinned to the bottom of the page
+     *                  (kept clear of the scroll content); pass null if none
+     * @param bottomPadDp extra bottom padding so content clears bottomBar
+     */
+    private FrameLayout blurPage(MiuixTopAppBar bar, ScrollView scroll,
+                                ViewGroup content, View bottomBar, float bottomPadDp) {
+        FrameLayout page = new FrameLayout(this);
+        page.setBackgroundColor(MiuixTheme.colors().background);
+
+        FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        page.addView(scroll, sp);
+
+        // lift the first content item clear of the overlaid bar
+        content.setPadding(content.getPaddingLeft(),
+                (int) (dp(barH) + content.getPaddingTop()),
+                content.getPaddingRight(),
+                (int) (dp(bottomPadDp) + content.getPaddingBottom()));
+
+        FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        page.addView(bar, bp);
+
+        if (bottomBar != null) {
+            FrameLayout.LayoutParams bpl = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            bpl.gravity = Gravity.BOTTOM;
+            page.addView(bottomBar, bpl);
+        }
+
+        bar.enableBackdropBlur(content, scroll);
+        return page;
+    }
+
+    private FrameLayout buildHomePage() {
+        FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.app_title), null);
@@ -473,12 +512,9 @@ public class MainActivity extends Activity {
                 showPage(PAGE_TEXT);
             }
         });
-        page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        page.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(twoPane ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
@@ -498,7 +534,7 @@ public class MainActivity extends Activity {
         }
         content.addView(buildSideColumn(), sideLp);
 
-        return page;
+        return blurPage(bar, scroll, content, null, 0f);
     }
 
     private View logoView() {
@@ -552,9 +588,8 @@ public class MainActivity extends Activity {
     }
 
     /** 文本互传 page: send text to the phone, and show text the phone sent. */
-    private LinearLayout buildTextPage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
+    private FrameLayout buildTextPage() {
+        FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.text_title), null);
@@ -562,12 +597,9 @@ public class MainActivity extends Activity {
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setTransparentBlur();
         bar.setLeading(backIcon(PAGE_HOME));
-        page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        page.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -641,7 +673,7 @@ public class MainActivity extends Activity {
         textRecvValue.setLayoutParams(rvLp);
         recvCard.addView(textRecvValue);
 
-        return page;
+        return blurPage(bar, scroll, content, null, 0f);
     }
 
     private View buildQrCard() {
@@ -1072,9 +1104,8 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- list page
 
-    private LinearLayout buildListPage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
+    private FrameLayout buildListPage() {
+        FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.list_title), null);
@@ -1086,7 +1117,6 @@ public class MainActivity extends Activity {
         bar.setLeading(back);
         bar.addTitleSuffix(countChip());
         bar.addActionView(cleanButton());
-        page.addView(bar, wrapWidth());
 
         filterRow = new MiuixTabRow(this, new String[]{
                 getString(R.string.filter_all),
@@ -1105,20 +1135,21 @@ public class MainActivity extends Activity {
         fl.setOrientation(LinearLayout.HORIZONTAL);
         fl.setPadding(dp(pad), dp(16f), dp(pad), dp(16f));
         fl.addView(filterRow, wrapContent());
-        page.addView(fl, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        page.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(fl);
         listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
         listBox.setPadding(dp(pad), dp(20f), dp(pad), dp(20f));
-        scroll.addView(listBox, new FrameLayout.LayoutParams(
+        body.addView(listBox);
+        scroll.addView(body, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        return page;
+        return blurPage(bar, scroll, body, null, 0f);
     }
 
     private View countChip() {
@@ -1345,9 +1376,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    private LinearLayout buildReceivePage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
+    private FrameLayout buildReceivePage() {
+        FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.recv_title), null);
@@ -1355,12 +1385,9 @@ public class MainActivity extends Activity {
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setTransparentBlur();
         bar.setLeading(backIcon(PAGE_HOME));
-        page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        page.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -1466,7 +1493,7 @@ public class MainActivity extends Activity {
         });
         actions.addView(gotoList);
 
-        return page;
+        return blurPage(bar, scroll, content, null, 0f);
     }
 
     private void updateReceiveUi() {
@@ -1550,9 +1577,8 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- detail page
 
-    private LinearLayout buildDetailPage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
+    private FrameLayout buildDetailPage() {
+        FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(MiuixTheme.colors().background);
         detailBox = page;
         return page;
@@ -1583,18 +1609,23 @@ public class MainActivity extends Activity {
             }
         });
         bar.addAction(share);
-        detailBox.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        detailBox.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(twoPane ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        content.setPadding(dp(pad), dp(pad), dp(pad), dp(pad));
+        content.setPadding(dp(pad), (int) (dp(barH) + dp(pad)), dp(pad), dp(pad));
         scroll.addView(content, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // overlay the frosted bar on top of the scroller; content slides under it
+        detailBox.addView(scroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams dblp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        detailBox.addView(bar, dblp);
+        bar.enableBackdropBlur(content, scroll);
 
         // preview card
         MiuixCard preview = new MiuixCard(this, R_CARD);
@@ -2946,9 +2977,8 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------- about page
 
-    private LinearLayout buildAboutPage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
+    private FrameLayout buildAboutPage() {
+        FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(MiuixTheme.colors().background);
 
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.about_title), null);
@@ -2956,12 +2986,9 @@ public class MainActivity extends Activity {
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
         bar.setTransparentBlur();
         bar.setLeading(backIcon(PAGE_HOME));
-        page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        page.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -3033,9 +3060,8 @@ public class MainActivity extends Activity {
         bottomBar.setGravity(Gravity.CENTER_HORIZONTAL);
         bottomBar.setPadding(dp(pad), dp(18f), dp(pad), dp(24f));
         bottomBar.addView(updateBtn);
-        page.addView(bottomBar, wrapWidth());
 
-        return page;
+        return blurPage(bar, scroll, content, bottomBar, 96f);
     }
 
     private String versionName() {
