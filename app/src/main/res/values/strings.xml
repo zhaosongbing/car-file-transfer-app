@@ -187,7 +187,7 @@
     <string name="qr_ready_title_conn">扫码或输入地址传输</string>
     <string name="qr_ready_desc_conn">手机扫码后，可上传文件到车机，也可从车机下载文件</string>
     <string name="addr_label">传输地址</string>
-    <string name="see_code">查看连接码</string>
+    <string name="see_code">查看热点码</string>
     <string name="copy_address">复制地址</string>
 
     <!-- copy feedback -->

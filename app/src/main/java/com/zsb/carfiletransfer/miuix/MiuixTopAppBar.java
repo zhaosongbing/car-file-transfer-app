@@ -1,6 +1,7 @@
 package com.zsb.carfiletransfer.miuix;
 
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
@@ -189,6 +190,34 @@ public class MiuixTopAppBar extends LinearLayout {
 
     public void clearActions() {
         actionRow.removeAllViews();
+    }
+
+    /**
+     * Frosted / transparent gradient treatment for the bar background.
+     *
+     * <p>Renders a vertical gradient from a translucent surface tint at the top
+     * fading to fully transparent at the bottom - the "透明渐变" look of a glass
+     * bar. A true backdrop blur would need scrollable content rendered behind
+     * the bar (the pages do not currently do that), so this gradient is the
+     * visible treatment and keeps the title / icon text crisp.</p>
+     */
+    public MiuixTopAppBar setTransparentBlur() {
+        int base = MiuixTheme.colors().surfaceContainer;
+        int r = Color.red(base), g = Color.green(base), b = Color.blue(base);
+        int top = Color.argb((int) (0.82f * 255f), r, g, b);
+        int bottom = Color.argb(0, r, g, b);
+        GradientDrawable g = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+        setBackground(g);
+        return this;
+    }
+
+    /** Make the title (app name) clickable - e.g. to navigate to another page. */
+    public void setTitleOnClickListener(View.OnClickListener l) {
+        title.setClickable(true);
+        title.setOnClickListener(l);
+        titleRow.setClickable(true);
+        titleRow.setOnClickListener(l);
     }
 
     /**

@@ -459,11 +459,20 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.app_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setTransparentBlur();
         bar.setLeading(logoView());
         bar.addActionView(adbPill());
-        bar.addActionView(aboutButton());
-        bar.addActionView(textButton());
+        // 点击 APP 图标（logo）→ 关于页；点击 APP 名称（标题）→ 文本互传
+        bar.setTitleOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                // 文本互传需要热点或连接已建立后才能进入
+                if (!clientConnected && !externalWifi) {
+                    toast(getString(R.string.text_need_connect));
+                    return;
+                }
+                showPage(PAGE_TEXT);
+            }
+        });
         page.addView(bar, wrapWidth());
 
         ScrollView scroll = new ScrollView(this);
@@ -505,6 +514,13 @@ public class MainActivity extends Activity {
         lp.gravity = Gravity.CENTER_VERTICAL;
         lp.rightMargin = dp(12f);
         logo.setLayoutParams(lp);
+        // 顶部栏 APP 图标点击 → 关于页
+        logo.setClickable(true);
+        logo.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                showPage(PAGE_ABOUT);
+            }
+        });
         return logo;
     }
 
@@ -535,43 +551,6 @@ public class MainActivity extends Activity {
         return pill;
     }
 
-    /** Top-right "关于" entry - opens the About page. */
-    private View aboutButton() {
-        MiuixButton b = new MiuixButton(this, getString(R.string.about_title),
-                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
-        b.setOutlined(true, MiuixTheme.colors().outline);
-        b.setRadiusDp(R_PILL).setPaddingDp(16f, 8f);
-        b.setLabelSizeSp(13f).setLabelWeight(600);
-        b.setLabelColor(MiuixTheme.colors().onSurface);
-        b.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                showPage(PAGE_ABOUT);
-            }
-        });
-        return b;
-    }
-
-    /** Top-right "文本" entry - opens the text transfer page. */
-    private View textButton() {
-        MiuixButton b = new MiuixButton(this, getString(R.string.text_nav),
-                MiuixButton.Size.SMALL, MiuixButton.Color.NEUTRAL);
-        b.setOutlined(true, MiuixTheme.colors().outline);
-        b.setRadiusDp(R_PILL).setPaddingDp(16f, 8f);
-        b.setLabelSizeSp(13f).setLabelWeight(600);
-        b.setLabelColor(MiuixTheme.colors().onSurface);
-        b.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                // 文本互传需要热点或连接已建立后才能进入
-                if (!clientConnected && !externalWifi) {
-                    toast(getString(R.string.text_need_connect));
-                    return;
-                }
-                showPage(PAGE_TEXT);
-            }
-        });
-        return b;
-    }
-
     /** 文本互传 page: send text to the phone, and show text the phone sent. */
     private LinearLayout buildTextPage() {
         LinearLayout page = new LinearLayout(this);
@@ -581,7 +560,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.text_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setTransparentBlur();
         bar.setLeading(backIcon(PAGE_HOME));
         page.addView(bar, wrapWidth());
 
@@ -1101,7 +1080,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.list_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setTransparentBlur();
 
         View back = backIcon(PAGE_HOME);
         bar.setLeading(back);
@@ -1374,7 +1353,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.recv_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setTransparentBlur();
         bar.setLeading(backIcon(PAGE_HOME));
         page.addView(bar, wrapWidth());
 
@@ -1588,7 +1567,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, name, null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setTransparentBlur();
 
         bar.setLeading(backIcon(PAGE_LIST));
         bar.addTitleSuffix(typeChip(type));
@@ -2975,7 +2954,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.about_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setBottomDivider(true, MiuixTheme.colors().outline, 1f);
+        bar.setTransparentBlur();
         bar.setLeading(backIcon(PAGE_HOME));
         page.addView(bar, wrapWidth());
 
@@ -3008,12 +2987,14 @@ public class MainActivity extends Activity {
         MiuixText name = new MiuixText(this, getString(R.string.app_name),
                 MiuixText.Role.TITLE);
         name.setSizeSp(26f).setWeight(700);
+        name.setGravity(Gravity.CENTER_HORIZONTAL);
         name.setLayoutParams(marginTop(16f));
         column.addView(name);
 
         aboutVersion = new MiuixText(this, getString(R.string.about_version, versionName()),
                 MiuixText.Role.CAPTION, MiuixText.Tone.TERTIARY);
         aboutVersion.setSizeSp(14f).setWeight(500);
+        aboutVersion.setGravity(Gravity.CENTER_HORIZONTAL);
         aboutVersion.setLayoutParams(marginTop(6f));
         column.addView(aboutVersion);
 
@@ -3039,15 +3020,20 @@ public class MainActivity extends Activity {
                 MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
         updateBtn.setRadiusDp(R_PILL).setPaddingDp(28f, 14f);
         updateBtn.setLabelSizeSp(15f).setLabelWeight(700);
-        LinearLayout.LayoutParams uLp = wrapWidth();
-        uLp.topMargin = dp(24f);
-        updateBtn.setLayoutParams(uLp);
+        updateBtn.setLayoutParams(wrapContent());
         updateBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 UpdateManager.check(MainActivity.this, true);
             }
         });
-        column.addView(updateBtn);
+
+        // 检测更新按钮固定在页面底部
+        LinearLayout bottomBar = new LinearLayout(this);
+        bottomBar.setOrientation(LinearLayout.VERTICAL);
+        bottomBar.setGravity(Gravity.CENTER_HORIZONTAL);
+        bottomBar.setPadding(dp(pad), dp(18f), dp(pad), dp(24f));
+        bottomBar.addView(updateBtn);
+        page.addView(bottomBar, wrapWidth());
 
         return page;
     }
