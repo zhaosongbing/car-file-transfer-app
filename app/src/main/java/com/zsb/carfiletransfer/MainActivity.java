@@ -70,9 +70,9 @@ import android.widget.ImageView;
 public class MainActivity extends Activity {
 
     // ---- design draft tokens (EXPANDED, 1194 x 834) ----
-    private static final float BAR_H_DRAFT = 92f;
+    private static final float BAR_H_DRAFT = 84f;
     private static final float PAD_DRAFT = 48f;
-    private static final float QR_CARD_W_DRAFT = 460f;
+    private static final float QR_CARD_W_DRAFT = 420f;
     private static final float QR_CARD_PAD_DRAFT = 40f;
     private static final float QR_SIZE_DRAFT = 300f;
     private static final float GAP_MAIN_DRAFT = 40f;
@@ -357,10 +357,10 @@ public class MainActivity extends Activity {
             barH = BAR_H_DRAFT;
         } else if (sc == MiuixWindowSizeClass.SizeClass.MEDIUM) {
             pad = 32f;
-            barH = 72f;
+            barH = 64f;
         } else {
             pad = 20f;
-            barH = 56f;
+            barH = 48f;
         }
 
         float contentW = Math.max(280f, wsc.getWidthDp() - pad * 2f);
@@ -487,7 +487,6 @@ public class MainActivity extends Activity {
             page.addView(bottomBar, bpl);
         }
 
-        bar.enableBackdropBlur(content, scroll);
         return page;
     }
 
@@ -498,7 +497,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.app_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setTransparentBlur();
+        bar.setSolidBar();
         bar.setLeading(logoView());
         bar.addActionView(adbPill());
         // 点击 APP 图标（logo）→ 关于页；点击 APP 名称（标题）→ 文本互传
@@ -595,7 +594,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.text_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setTransparentBlur();
+        bar.setSolidBar();
         bar.setLeading(backIcon(PAGE_HOME));
 
         ScrollView scroll = new ScrollView(this);
@@ -1111,7 +1110,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.list_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setTransparentBlur();
+        bar.setSolidBar();
 
         View back = backIcon(PAGE_HOME);
         bar.setLeading(back);
@@ -1383,7 +1382,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.recv_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setTransparentBlur();
+        bar.setSolidBar();
         bar.setLeading(backIcon(PAGE_HOME));
 
         ScrollView scroll = new ScrollView(this);
@@ -1593,7 +1592,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, name, null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setTransparentBlur();
+        bar.setSolidBar();
 
         bar.setLeading(backIcon(PAGE_LIST));
         bar.addTitleSuffix(typeChip(type));
@@ -1619,13 +1618,12 @@ public class MainActivity extends Activity {
         scroll.addView(content, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // overlay the frosted bar on top of the scroller; content slides under it
+        // overlay the bar on top of the scroller; content slides under it
         detailBox.addView(scroll, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         FrameLayout.LayoutParams dblp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         detailBox.addView(bar, dblp);
-        bar.enableBackdropBlur(content, scroll);
 
         // preview card
         MiuixCard preview = new MiuixCard(this, R_CARD);
@@ -2984,7 +2982,7 @@ public class MainActivity extends Activity {
         MiuixTopAppBar bar = new MiuixTopAppBar(this, getString(R.string.about_title), null);
         bar.setHeightDp(barH).setPaddingDp(pad, 0f)
                 .setTitleSizeSp(wsc.isCompact() ? 18f : 22f);
-        bar.setTransparentBlur();
+        bar.setSolidBar();
         bar.setLeading(backIcon(PAGE_HOME));
 
         ScrollView scroll = new ScrollView(this);
