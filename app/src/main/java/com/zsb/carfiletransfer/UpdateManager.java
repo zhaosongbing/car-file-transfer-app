@@ -240,7 +240,7 @@ public final class UpdateManager {
         final MiuixDialog[] progress = new MiuixDialog[1];
         progress[0] = new MiuixDialog.Builder(a)
                 .setTitle(a.getString(R.string.update_title, r.version))
-                .setMessage(a.getString(R.string.update_downloading, "0%"))
+                .setMessage(a.getString(R.string.update_downloading))
                 .setCancelable(false)
                 .show();
 
