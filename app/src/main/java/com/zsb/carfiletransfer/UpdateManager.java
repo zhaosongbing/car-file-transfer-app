@@ -13,9 +13,14 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
 import android.widget.Toast;
 
 import com.zsb.carfiletransfer.miuix.MiuixDialog;
+import com.zsb.carfiletransfer.miuix.MiuixProgress;
+import com.zsb.carfiletransfer.miuix.MiuixText;
+import com.zsb.carfiletransfer.miuix.MiuixTheme;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -23,8 +28,13 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * Online update: asks GitHub Releases for the newest published version and
@@ -52,6 +62,11 @@ public final class UpdateManager {
     private static final int CONNECT_TIMEOUT_MS = 10000;
     private static final int READ_TIMEOUT_MS = 15000;
 
+    /** Downloads are bulkier than the metadata call, so allow far more slack. */
+    private static final int DL_CONNECT_TIMEOUT_MS = 20000;
+    private static final int DL_READ_TIMEOUT_MS = 45000;
+    private static final int MAX_ATTEMPTS_PER_SOURCE = 3;
+
     private static final Handler ui = new Handler(Looper.getMainLooper());
 
     private UpdateManager() {
@@ -65,6 +80,12 @@ public final class UpdateManager {
         public String notes;      // release body
         public String apkUrl;
         public long apkSize;
+        /**
+         * Every URL able to serve this package, best source first. They all
+         * deliver the identical file, so a partial download may resume from
+         * whichever source actually answers.
+         */
+        public final List<String> apkUrls = new ArrayList<String>();
     }
 
     /** Why a check failed, so the toast can name the real cause. */
@@ -78,6 +99,20 @@ public final class UpdateManager {
         Fail fail = Fail.UNKNOWN;
         int httpCode;
         String detail;
+    }
+
+    /** Why a download failed, so the toast can name the real cause. */
+    public enum DlFail {
+        OFFLINE, TIMEOUT, HTTP, STORAGE, CORRUPT, ALL_FAILED, UNKNOWN
+    }
+
+    /** Outcome of one download attempt, again carrying the real reason. */
+    private static final class DownloadResult {
+        boolean ok;
+        DlFail fail = DlFail.UNKNOWN;
+        int httpCode;
+        String detail;   // exception text, or the url that failed
+        String host;     // host we ultimately could not reach
     }
 
     /**
@@ -223,7 +258,8 @@ public final class UpdateManager {
             r.version = stripTag(r.tag);
             r.name = o.optString("name", r.tag);
             r.notes = o.optString("body", "");
-            if (r.notes.length() > 600) r.notes = r.notes.substring(0, 600) + "…";
+            // Show the notes in full - the dialog scrolls, so nothing is cut off.
+            if (r.notes.length() > 8000) r.notes = r.notes.substring(0, 8000) + "…";
             if (r.tag.length() == 0) {
                 out.fail = Fail.PARSE;
                 return out;
@@ -231,36 +267,64 @@ public final class UpdateManager {
 
             // Prefer the versioned attachment; the bare name is kept as a
             // compatibility alias, so either one is a valid download.
-            String versioned = null, any = null;
+            //
+            // GitHub hands every one of these links out, but they all end up
+            // redirecting to the release-assets CDN host - a host some networks
+            // simply cannot reach even though this very metadata call succeeded
+            // against api.github.com. So collect them all and let the download
+            // step move on to the next source instead of giving up.
+            LinkedHashSet<String> urls = new LinkedHashSet<String>();
+            String versionedApi = null, versionedWeb = null;
+            String anyApi = null, anyWeb = null;
             long versionedSize = 0L, anySize = 0L;
             JSONArray assets = o.optJSONArray("assets");
             if (assets != null) {
                 for (int i = 0; i < assets.length(); i++) {
                     JSONObject asset = assets.optJSONObject(i);
                     if (asset == null) continue;
-                    String url = asset.optString("browser_download_url", "");
                     String name = asset.optString("name", "");
+                    if (!name.endsWith(".apk")) continue;
+                    String web = asset.optString("browser_download_url", "");
+                    String api = asset.optString("url", "");
                     long size = asset.optLong("size", 0L);
-                    if (!url.endsWith(".apk")) continue;
-                    if (any == null) {
-                        any = url;
+                    if (anyWeb == null) {
+                        anyWeb = web;
+                        anyApi = api;
                         anySize = size;
                     }
-                    if (name.startsWith("CarFileTransfer-v") && versioned == null) {
-                        versioned = url;
+                    if (name.startsWith("CarFileTransfer-v") && versionedWeb == null) {
+                        versionedWeb = web;
+                        versionedApi = api;
                         versionedSize = size;
                     }
                 }
             }
-            if (versioned != null) {
-                r.apkUrl = versioned;
+            if (versionedWeb != null) {
+                if (versionedApi != null) urls.add(versionedApi);
+                urls.add(versionedWeb);
+            }
+            if (anyWeb != null) {
+                if (anyApi != null) urls.add(anyApi);
+                urls.add(anyWeb);
+            }
+            if (urls.isEmpty() && r.tag.length() > 0) {
+                // No usable asset list - fall back to the canonical file names.
+                urls.add("https://github.com/" + OWNER + "/" + REPO
+                        + "/releases/download/" + r.tag + "/CarFileTransfer-" + r.tag + ".apk");
+                urls.add("https://github.com/" + OWNER + "/" + REPO
+                        + "/releases/download/" + r.tag + "/CarFileTransfer.apk");
+            }
+            for (String u : urls) {
+                if (u != null && u.length() > 0) r.apkUrls.add(u);
+            }
+            if (versionedSize > 0) {
+                r.apkUrl = versionedWeb;
                 r.apkSize = versionedSize;
-            } else if (any != null) {
-                r.apkUrl = any;
+            } else if (anySize > 0) {
+                r.apkUrl = anyWeb;
                 r.apkSize = anySize;
-            } else if (r.tag.length() > 0) {
-                r.apkUrl = "https://github.com/" + OWNER + "/" + REPO
-                        + "/releases/download/" + r.tag + "/CarFileTransfer-" + r.tag + ".apk";
+            } else if (!r.apkUrls.isEmpty()) {
+                r.apkUrl = r.apkUrls.get(0);
             }
             if (r.apkUrl == null) {
                 out.fail = Fail.NO_ASSET;
@@ -398,26 +462,43 @@ public final class UpdateManager {
     // ---------------------------------------------------------------- install
 
     private static void downloadAndInstall(final Activity a, final Release r) {
+        // Determinate progress: a real bar plus a live byte counter, so a slow
+        // connection is visibly progressing rather than looking hung.
+        LinearLayout panel = new LinearLayout(a);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        MiuixProgress bar = new MiuixProgress(a, 6f);
+        bar.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        MiuixText stat = new MiuixText(a, a.getString(R.string.update_dl_preparing),
+                MiuixText.Role.BODY_SMALL, MiuixText.Tone.SECONDARY);
+        LinearLayout.LayoutParams statLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        statLp.topMargin = MiuixTheme.dp(a, 10f);
+        stat.setLayoutParams(statLp);
+        panel.addView(bar);
+        panel.addView(stat);
+
         final MiuixDialog[] progress = new MiuixDialog[1];
         progress[0] = new MiuixDialog.Builder(a)
                 .setTitle(a.getString(R.string.update_title, r.version))
                 .setMessage(a.getString(R.string.update_downloading))
+                .setContent(panel)
                 .setCancelable(false)
                 .show();
 
+        final DownloadListener listener = new UiProgress(a, bar, stat);
+        final File out = new File(UpdateProvider.updateDir(a), APK_NAME);
+
         new Thread(new Runnable() {
             public void run() {
-                File out = new File(UpdateProvider.updateDir(a), APK_NAME);
-                boolean ok = download(r.apkUrl, out);
-                final boolean done = ok;
+                final DownloadResult res = downloadAny(a, r, out, listener);
                 ui.post(new Runnable() {
                     public void run() {
                         if (progress[0] != null) progress[0].dismiss();
-                        if (done) {
+                        if (res.ok) {
                             install(a, out);
                         } else {
-                            Toast.makeText(a, a.getString(R.string.update_failed),
-                                    Toast.LENGTH_LONG).show();
+                            notifyDownloadFailed(a, res);
                         }
                     }
                 });
@@ -425,39 +506,326 @@ public final class UpdateManager {
         }, "update-download").start();
     }
 
-    private static boolean download(String url, File out) {
+    /** Live feedback from the download thread. */
+    private interface DownloadListener {
+        void onProgress(long done, long total);
+
+        void onPhase(String phase);
+    }
+
+    /** Throttles byte counts down to a handful of UI updates per second. */
+    private static final class UiProgress implements DownloadListener {
+
+        private final WeakReference<Activity> act;
+        private final MiuixProgress bar;
+        private final MiuixText stat;
+        private long lastPostMs;
+        private int lastPercent = -1;
+
+        UiProgress(Activity a, MiuixProgress bar, MiuixText stat) {
+            this.act = new WeakReference<Activity>(a);
+            this.bar = bar;
+            this.stat = stat;
+        }
+
+        public void onProgress(final long done, final long total) {
+            final int pct = percent(done, total);
+            long now = System.currentTimeMillis();
+            if (pct == lastPercent && now - lastPostMs < 400L) return;
+            lastPercent = pct;
+            lastPostMs = now;
+            ui.post(new Runnable() {
+                public void run() {
+                    Activity a = act.get();
+                    if (a == null) return;
+                    bar.setProgress(pct);
+                    stat.setText(a.getString(R.string.update_dl_progress, pct,
+                            humanSize(done), total > 0 ? humanSize(total)
+                                    : a.getString(R.string.update_dl_unknown_size)));
+                }
+            });
+        }
+
+        public void onPhase(final String phase) {
+            ui.post(new Runnable() {
+                public void run() {
+                    stat.setText(phase);
+                }
+            });
+        }
+    }
+
+    /**
+     * Fetch the package, trying every source we know of in turn.
+     *
+     * <p>All GitHub links redirect to the release-assets CDN, a host that some
+     * networks cannot reach at all - which is why the update dialog could
+     * appear (metadata came from {@code api.github.com}) while the download
+     * always failed. Sources are interchangeable because they serve the
+     * identical file, so a stalled source leaves a partial file that the next
+     * attempt continues from - important on flaky mobile links where starting
+     * over every time never finishes.</p>
+     */
+    private static DownloadResult downloadAny(Context ctx, Release r, File out,
+                                              DownloadListener l) {
+        DownloadResult res = new DownloadResult();
+        if (!isOnline(ctx)) {
+            res.fail = DlFail.OFFLINE;
+            return res;
+        }
+        List<String> sources = new ArrayList<String>();
+        for (String u : r.apkUrls) {
+            if (u != null && u.length() > 0 && !sources.contains(u)) sources.add(u);
+        }
+        if (sources.isEmpty()) {
+            res.fail = DlFail.UNKNOWN;
+            res.detail = "no download source";
+            return res;
+        }
+        // A leftover file is only ever useful as a partial; anything at or past
+        // the expected size is a complete-but-untrusted file, so drop it.
+        long expected = r.apkSize;
+        if (out.exists() && (expected <= 0 || out.length() >= expected)) {
+            out.delete();
+        }
+
+        DownloadResult last = null;
+        for (String url : sources) {
+            for (int attempt = 0; attempt < MAX_ATTEMPTS_PER_SOURCE; attempt++) {
+                if (attempt > 0) {
+                    l.onPhase(ctx.getString(R.string.update_dl_retry, attempt + 1));
+                    sleepQuiet(1500L * attempt);
+                }
+                last = tryDownload(url, out, expected, l);
+                if (last.ok) return last;
+                // Nothing downstream can fix these two, so stop early.
+                if (last.fail == DlFail.OFFLINE || last.fail == DlFail.STORAGE) {
+                    return last;
+                }
+            }
+        }
+        if (last == null) {
+            last = new DownloadResult();
+            last.fail = DlFail.UNKNOWN;
+            last.detail = "no download source";
+            return last;
+        }
+        last.fail = DlFail.ALL_FAILED;
+        last.host = hostOf(last.detail);
+        return last;
+    }
+
+    /**
+     * One source, resuming from whatever is already on disk. A {@code 416}
+     * means the partial no longer matches the server, so start that source over.
+     */
+    private static DownloadResult tryDownload(String url, File out, long expected,
+                                              DownloadListener l) {
+        long start = out.exists() ? out.length() : 0L;
+        if (start > 0) {
+            DownloadResult r = streamDownload(url, out, start, expected, l);
+            if (r.ok) return r;
+            if (r.httpCode == 416) {
+                out.delete();
+                return streamDownload(url, out, 0L, expected, l);
+            }
+            return r;
+        }
+        return streamDownload(url, out, 0L, expected, l);
+    }
+
+    private static DownloadResult streamDownload(String url, File out, long start,
+                                                 long expected, DownloadListener l) {
+        DownloadResult res = new DownloadResult();
+        res.detail = url;
+        res.host = hostOf(url);
         HttpURLConnection c = null;
         InputStream in = null;
         FileOutputStream fos = null;
         try {
-            if (out.exists()) out.delete();
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(15000);
-            c.setReadTimeout(30000);
-            c.setInstanceFollowRedirects(true);
-            int code = c.getResponseCode();
-            if (code != 200) {
-                Log.w(TAG, "download returned " + code);
-                return false;
+            File parent = out.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                res.fail = DlFail.STORAGE;
+                res.detail = parent.getAbsolutePath();
+                return res;
             }
-            long total = c.getContentLength();
+            try {
+                fos = new FileOutputStream(out, start > 0);
+            } catch (Exception e) {
+                Log.w(TAG, "cannot write " + out + ": " + e.getMessage());
+                res.fail = DlFail.STORAGE;
+                res.detail = e.getMessage();
+                return res;
+            }
+
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(DL_CONNECT_TIMEOUT_MS);
+            c.setReadTimeout(DL_READ_TIMEOUT_MS);
+            c.setInstanceFollowRedirects(true);
+            c.setRequestProperty("Accept", "application/octet-stream");
+            c.setRequestProperty("User-Agent", "CarFileTransfer");
+            if (start > 0) c.setRequestProperty("Range", "bytes=" + start + "-");
+
+            int code = c.getResponseCode();
+            res.httpCode = code;
+            if (code != 200 && code != 206) {
+                Log.w(TAG, "download returned " + code + " from " + res.host);
+                res.fail = DlFail.HTTP;
+                return res;
+            }
+
+            long total = 0L;
+            String range = c.getHeaderField("Content-Range");
+            if (range != null && range.indexOf('/') > 0) {
+                try {
+                    total = Long.parseLong(range.substring(range.indexOf('/') + 1).trim());
+                } catch (NumberFormatException ignored) {
+                    total = 0L;
+                }
+            }
+            if (total <= 0) {
+                long declared = contentLength(c);
+                total = start + declared;
+            }
+            long shown = expected > 0 ? expected : total;
+
             in = c.getInputStream();
-            fos = new FileOutputStream(out);
             byte[] buf = new byte[32768];
+            long written = start;
             int n;
+            l.onProgress(written, shown);
             while ((n = in.read(buf)) > 0) {
                 fos.write(buf, 0, n);
+                written += n;
+                l.onProgress(written, shown);
             }
-            fos.flush();
-            Log.i(TAG, "downloaded " + out.length() + " bytes (declared " + total + ")");
-            return out.length() > 0;
+            close(fos);
+            fos = null;
+
+            long len = out.length();
+            if (expected > 0 && len != expected) {
+                Log.w(TAG, "size mismatch: got " + len + " expected " + expected);
+                res.fail = DlFail.CORRUPT;
+                res.detail = "size " + len + " != " + expected;
+                return res;
+            }
+            if (!looksLikeZip(out)) {
+                // A captive portal or proxy answered with HTML instead.
+                Log.w(TAG, "downloaded file is not an APK");
+                res.fail = DlFail.CORRUPT;
+                res.detail = "not a zip/apk";
+                return res;
+            }
+            Log.i(TAG, "downloaded " + len + " bytes");
+            res.ok = true;
+            return res;
+        } catch (java.net.SocketTimeoutException e) {
+            Log.w(TAG, "download timed out: " + e.getMessage());
+            res.fail = DlFail.TIMEOUT;
+            res.detail = e.getMessage();
+            return res;
+        } catch (java.io.FileNotFoundException e) {
+            Log.w(TAG, "storage problem: " + e.getMessage());
+            res.fail = DlFail.STORAGE;
+            res.detail = e.getMessage();
+            return res;
         } catch (Exception e) {
             Log.w(TAG, "download failed: " + e.getMessage());
-            return false;
+            res.fail = DlFail.UNKNOWN;
+            res.detail = e.getClass().getSimpleName() + ": " + e.getMessage();
+            return res;
         } finally {
             close(fos);
             close(in);
             if (c != null) c.disconnect();
+        }
+    }
+
+    private static void notifyDownloadFailed(final Activity a, final DownloadResult res) {
+        ui.post(new Runnable() {
+            public void run() {
+                String msg;
+                switch (res.fail) {
+                    case OFFLINE:
+                        msg = a.getString(R.string.update_dl_err_offline);
+                        break;
+                    case TIMEOUT:
+                        msg = a.getString(R.string.update_dl_err_timeout);
+                        break;
+                    case HTTP:
+                        msg = a.getString(R.string.update_dl_err_http, res.httpCode);
+                        break;
+                    case STORAGE:
+                        msg = a.getString(R.string.update_dl_err_storage);
+                        break;
+                    case CORRUPT:
+                        msg = a.getString(R.string.update_dl_err_corrupt);
+                        break;
+                    case ALL_FAILED:
+                        msg = a.getString(R.string.update_dl_err_all,
+                                res.host == null ? "unknown" : res.host);
+                        break;
+                    default:
+                        msg = a.getString(R.string.update_dl_err_unknown,
+                                res.detail == null ? "unknown" : res.detail);
+                        break;
+                }
+                Toast.makeText(a, msg, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /** APKs are zip archives, so a real download always starts with "PK". */
+    private static boolean looksLikeZip(File f) {
+        java.io.FileInputStream fis = null;
+        try {
+            fis = new java.io.FileInputStream(f);
+            byte[] magic = new byte[4];
+            int n = fis.read(magic);
+            return n >= 2 && magic[0] == 'P' && magic[1] == 'K';
+        } catch (Exception e) {
+            return false;
+        } finally {
+            close(fis);
+        }
+    }
+
+    private static long contentLength(HttpURLConnection c) {
+        try {
+            String h = c.getHeaderField("Content-Length");
+            return h == null ? -1L : Long.parseLong(h.trim());
+        } catch (Exception e) {
+            return -1L;
+        }
+    }
+
+    private static String hostOf(String url) {
+        try {
+            return new URL(url).getHost();
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
+    private static int percent(long done, long total) {
+        if (total <= 0) return 0;
+        int p = (int) (100L * done / total);
+        return Math.max(0, Math.min(100, p));
+    }
+
+    private static String humanSize(long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1048576L) {
+            return String.format(Locale.US, "%.1f KB", bytes / 1024f);
+        }
+        return String.format(Locale.US, "%.2f MB", bytes / 1048576f);
+    }
+
+    private static void sleepQuiet(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

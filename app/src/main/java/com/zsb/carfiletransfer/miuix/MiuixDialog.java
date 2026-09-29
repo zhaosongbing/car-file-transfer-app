@@ -8,7 +8,9 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 
 /**
  * MIUIX Dialog / SuperDialog: rounded surface with title, message, optional
@@ -51,6 +53,8 @@ public class MiuixDialog {
         private OnActionListener neutralListener;
         private boolean cancelable = true;
         private float widthDp = 420f;
+        private float maxMessageHeightDp = 320f;
+        private boolean messageScrollable = true;
 
         public Builder(Context c) {
             this.c = c;
@@ -117,6 +121,18 @@ public class MiuixDialog {
 
         private float paddingDp = 24f;
 
+        /** Cap for how tall the scrollable message area may grow, in dp. */
+        public Builder setMaxMessageHeightDp(float dp) {
+            this.maxMessageHeightDp = dp;
+            return this;
+        }
+
+        /** Turn off message scrolling when the text is known to be short. */
+        public Builder setMessageScrollable(boolean scrollable) {
+            this.messageScrollable = scrollable;
+            return this;
+        }
+
         public MiuixDialog show() {
             final MiuixDialog[] ref = new MiuixDialog[1];
             Dialog d = new Dialog(c);
@@ -142,12 +158,28 @@ public class MiuixDialog {
             if (message != null && message.length() > 0) {
                 MiuixText m = new MiuixText(c, message, MiuixText.Role.BODY,
                         MiuixText.Tone.SECONDARY);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.topMargin = MiuixTheme.dp(c, 10f);
-                m.setLayoutParams(lp);
-                card.addView(m);
+                if (messageScrollable) {
+                    // Long text (release notes) must never push the action row
+                    // off screen - scroll inside a capped area instead.
+                    MaxHeightScrollView sv =
+                            new MaxHeightScrollView(c, MiuixTheme.dp(c, maxMessageHeightDp));
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.topMargin = MiuixTheme.dp(c, 10f);
+                    sv.setLayoutParams(lp);
+                    sv.addView(m, new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+                    card.addView(sv);
+                } else {
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.topMargin = MiuixTheme.dp(c, 10f);
+                    m.setLayoutParams(lp);
+                    card.addView(m);
+                }
             }
             if (content != null) {
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -230,6 +262,28 @@ public class MiuixDialog {
             // late binding so listeners can dismiss the dialog themselves
             ref[0] = wrapper;
             return wrapper;
+        }
+    }
+
+    /**
+     * A scroll container that never grows taller than {@code maxHeightPx}, so a
+     * long message scrolls inside the card instead of overflowing off screen.
+     */
+    private static final class MaxHeightScrollView extends ScrollView {
+
+        private final int maxHeightPx;
+
+        MaxHeightScrollView(Context c, int maxHeightPx) {
+            super(c);
+            this.maxHeightPx = maxHeightPx;
+            setVerticalScrollBarEnabled(true);
+            setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int capped = View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.AT_MOST);
+            super.onMeasure(widthSpec, capped);
         }
     }
 }
