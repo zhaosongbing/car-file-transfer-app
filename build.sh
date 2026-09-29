@@ -65,8 +65,8 @@ echo "== 2. aapt2 link =="
   -A "$SRC/assets" \
   --min-sdk-version 26 \
   --target-sdk-version 36 \
-  --version-code 17 \
-  --version-name 9.8 \
+  --version-code 18 \
+  --version-name 9.8.1 \
   --java "$OUT/gen"
 
 echo "== 3. javac =="

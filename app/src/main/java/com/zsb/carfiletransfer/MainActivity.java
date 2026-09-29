@@ -1850,7 +1850,12 @@ public class MainActivity extends Activity {
         final boolean adbReady = adbNow != null && adbNow.isConnected();
         final int cardCount = adbReady ? 3 : 2;
         final MiuixCard[] options = new MiuixCard[cardCount];
-        final int[] selected = new int[]{connectOption < cardCount ? connectOption : 0};
+        // A live ADB transport means we can pull this machine's own hotspot
+        // credentials, so it becomes the preselected route. Anything the user
+        // picked earlier still wins when ADB is not connected.
+        int initial = connectOption < cardCount ? connectOption : 0;
+        if (adbReady) initial = OPTION_ADB;
+        final int[] selected = new int[]{initial};
         options[0] = optionCard(getString(R.string.opt_phone_title),
                 getString(R.string.opt_phone_desc), selected[0] == 0, MiuixIcon.Shape.PHONE);
         options[1] = optionCard(getString(R.string.opt_car_title),
