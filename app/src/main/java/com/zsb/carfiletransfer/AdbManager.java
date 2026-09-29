@@ -31,9 +31,24 @@ public final class AdbManager {
         public boolean listening;
         public final List<String> clients = new ArrayList<String>();
         public String detail = "";
+        /** True when a wired debugging session looks live (USB gadget + cable). */
+        public boolean usbAdb;
+        public String usbState = "";
 
+        /**
+         * Wireless clients count as connected, and so does a wired session:
+         * there is no socket to observe for a USB transport, so the USB state
+         * plus an attached cable are the closest signals available to an app.
+         */
         public boolean isConnected() {
-            return !clients.isEmpty();
+            return !clients.isEmpty() || usbAdb;
+        }
+
+        /** Which transport answered, for display purposes. */
+        public String transport() {
+            if (usbAdb) return "USB";
+            if (!clients.isEmpty()) return "TCP:" + tcpPort;
+            return "";
         }
     }
 
@@ -90,13 +105,57 @@ public final class AdbManager {
             }
         }
 
+        // Wired transport: the USB gadget only exposes adb while a host is
+        // attached and has negotiated the function, so combine that state with
+        // a live supply line. If the sysfs line cannot be read we trust the
+        // USB state alone rather than hiding the option.
+        String usbState = prop("sys.usb.state");
+        if (usbState == null || usbState.length() == 0) {
+            usbState = prop("persist.sys.usb.config");
+        }
+        s.usbState = usbState == null ? "" : usbState;
+        boolean adbFunction = s.usbState.contains("adb");
+        Boolean attached = usbAttached();
+        s.usbAdb = adbFunction && (attached == null || attached.booleanValue());
+
         StringBuilder d = new StringBuilder();
         d.append(s.daemonRunning ? "adbd 运行中" : "adbd 未运行");
         d.append(" · 端口 ").append(s.tcpPort);
         if (s.listening) d.append(" · 已监听");
-        if (s.isConnected()) d.append(" · 已连接 ").append(join(s.clients));
+        if (s.usbAdb) d.append(" · 有线已连接");
+        if (!s.clients.isEmpty()) d.append(" · 无线已连接 ").append(join(s.clients));
         s.detail = d.toString();
         return s;
+    }
+
+    /**
+     * Whether something is plugged into USB. Returns null when the sysfs line is
+     * unreadable, letting the caller fall back to the USB state alone.
+     */
+    private static Boolean usbAttached() {
+        String[] paths = {
+                "/sys/class/power_supply/usb/online",
+                "/sys/class/power_supply/usb/present",
+        };
+        for (String p : paths) {
+            String v = readFirstLine(p);
+            if (v != null && v.length() > 0) return Boolean.valueOf("1".equals(v.trim()));
+        }
+        return null;
+    }
+
+    private static String readFirstLine(String path) {
+        BufferedReader r = null;
+        try {
+            File f = new File(path);
+            if (!f.exists()) return null;
+            r = new BufferedReader(new FileReader(f));
+            return r.readLine();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            close(r);
+        }
     }
 
     private static String join(List<String> list) {
@@ -198,6 +257,165 @@ public final class AdbManager {
             return "";
         } finally {
             close(r);
+        }
+    }
+
+    // ---------------- hotspot credentials ----------------
+
+    /** The hotspot credentials as stored by the system. */
+    public static final class ApCredentialResult {
+        public boolean ok;
+        public String ssid;
+        public String passphrase;
+        public boolean open;
+        public String source = "";
+        public String detail = "";
+    }
+
+    /** Where hostapd keeps the running / saved soft AP setup, by Android era. */
+    private static final String[] HOSTAPD_PATHS = {
+            "/data/misc/wifi/hostapd/hostapd.conf",
+            "/data/misc/apexdata/com.android.wifi/hostapd/hostapd.conf",
+            "/data/misc/wifi/hostapd.conf",
+            "/data/misc/wifi/softap.conf",
+            "/etc/wifi/softap.conf",
+    };
+
+    /** Persistent Wi-Fi / soft AP configuration stores. */
+    private static final String[] STORE_PATHS = {
+            "/data/misc/wifi/WifiConfigStore.xml",
+            "/data/misc/wifi/WifiConfigStoreSoftAp.xml",
+            "/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml",
+            "/data/misc/apexdata/com.android.wifi/WifiConfigStoreSoftAp.xml",
+    };
+
+    /**
+     * Read the unit's own hotspot name and password.
+     *
+     * <p>Those files live under {@code /data/misc/wifi}, which a normal third
+     * party app cannot open - reading them by {@code File} silently fails. Going
+     * through the shell instead lets an elevated context (ADB debugging units
+     * are usually rooted, or at least grant {@code su}) answer the request,
+     * which is exactly what running the same command over {@code adb shell}
+     * would return. Falls back to the unprivileged command, so it also works on
+     * permissive builds.</p>
+     */
+    public static ApCredentialResult readApCredentials() {
+        ApCredentialResult r = new ApCredentialResult();
+        for (String p : HOSTAPD_PATHS) {
+            String text = dumpFile(p);
+            if (text == null) continue;
+            ApCredentialResult c = parseHostapd(text, p);
+            if (c != null && c.ok) return c;
+        }
+        for (String p : STORE_PATHS) {
+            String text = dumpFile(p);
+            if (text == null) continue;
+            ApCredentialResult c = parseConfigStore(text, p);
+            if (c != null && c.ok) return c;
+        }
+        r.ok = false;
+        r.detail = "无法读取系统热点配置（需要 root / 系统权限）";
+        return r;
+    }
+
+    /** Read one protected file, trying an elevated context before giving up. */
+    private static String dumpFile(String path) {
+        String[] forms = {"su 0 cat " + path, "su -c cat " + path, "cat " + path};
+        for (String cmd : forms) {
+            String out = exec(cmd);
+            if (out == null || out.length() == 0) continue;
+            if (out.contains("Permission denied") || out.contains("No such file")
+                    || out.contains("not found") || out.contains("su: ")) {
+                continue;
+            }
+            return out;
+        }
+        return null;
+    }
+
+    private static ApCredentialResult parseHostapd(String text, String source) {
+        String ssid = null;
+        String psk = null;
+        boolean wpa = false;
+        String[] lines = text.split("\n");
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (line.startsWith("ssid=")) {
+                ssid = line.substring(5).trim();
+            } else if (line.startsWith("wpa_passphrase=")) {
+                psk = line.substring(15).trim();
+                wpa = true;
+            } else if (line.startsWith("wpa=")) {
+                wpa = wpa || !"0".equals(line.substring(4).trim());
+            } else if (line.startsWith("wpa_key_mgmt=")) {
+                wpa = true;
+            }
+        }
+        if (ssid == null || ssid.length() == 0) return null;
+        ApCredentialResult r = new ApCredentialResult();
+        r.ok = true;
+        r.ssid = ssid;
+        r.passphrase = psk;
+        r.open = !wpa || psk == null || psk.length() == 0;
+        r.source = source;
+        return r;
+    }
+
+    /** Pull SSID / PreSharedKey out of a WifiConfigStore document. */
+    private static ApCredentialResult parseConfigStore(String text, String source) {
+        int from = text.indexOf("<SoftAp");
+        if (from < 0) from = 0;
+        java.util.regex.Matcher mSsid =
+                java.util.regex.Pattern.compile("name=\"SSID\"[^>]*>([^<]*)<")
+                        .matcher(text);
+        java.util.regex.Matcher mPsk =
+                java.util.regex.Pattern.compile("name=\"PreSharedKey\"[^>]*>([^<]*)<")
+                        .matcher(text);
+        String ssid = firstAfter(mSsid, from);
+        if (ssid == null) return null;
+        String psk = firstAfter(mPsk, from);
+        ApCredentialResult r = new ApCredentialResult();
+        r.ok = true;
+        r.ssid = unescape(ssid);
+        r.passphrase = psk == null ? null : unescape(psk);
+        r.open = r.passphrase == null || r.passphrase.length() == 0;
+        r.source = source;
+        return r;
+    }
+
+    /** First match at or after {@code from}, ignoring anything before it. */
+    private static String firstAfter(java.util.regex.Matcher m, int from) {
+        m.reset();
+        while (m.find()) {
+            if (m.start() >= from) return m.group(1).trim();
+        }
+        return null;
+    }
+
+    private static String unescape(String s) {
+        if (s == null) return null;
+        String v = s.replace("&quot;", "\"").replace("&amp;", "&");
+        return v.replace("\"", "");
+    }
+
+    private static String exec(String cmd) {
+        Process p = null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd + " 2>/dev/null");
+            pb.redirectErrorStream(true);
+            p = pb.start();
+            StringBuilder sb = new StringBuilder();
+            BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), "UTF-8"));
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line).append('\n');
+            close(r);
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (p != null) p.destroy();
         }
     }
 

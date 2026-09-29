@@ -129,6 +129,12 @@
     <string name="connect_title">选择连接方式</string>
     <string name="connect_desc">建立局域网连接后，手机扫码即可向本机传文件</string>
     <string name="connect_tip">两种方案任选其一，连接成功后本机将自动生成二维码</string>
+    <string name="connect_tip_adb">任选其一；已检测到 ADB 连接，ADB 方式会自动读取本机热点凭据</string>
+    <string name="opt_adb_title">以 ADB 方式连接</string>
+    <string name="opt_adb_desc">通过 ADB 读取本机热点名称与密码并自动回填</string>
+    <string name="adb_reading_creds">正在通过 ADB 读取热点凭据…</string>
+    <string name="adb_creds_ok">已读取热点：%1$s</string>
+    <string name="adb_creds_failed">ADB 读取热点凭据失败：%1$s</string>
     <string name="connect_confirm">确定并开始传输</string>
     <string name="opt_phone_title">手机连接车机热点</string>
     <string name="opt_phone_desc">在手机 Wi-Fi 中连接本机热点「车机」</string>

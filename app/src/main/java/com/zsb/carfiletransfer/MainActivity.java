@@ -250,6 +250,8 @@ public class MainActivity extends Activity {
     private boolean linked = false;
     private int qrMode = 0;
     private int connectOption = 0;
+    /** Routes offered in the connect dialog: 0 phone hotspot, 1 car hotspot, 2 ADB. */
+    private static final int OPTION_ADB = 2;
     private String detailFile;
     private int filterIndex = 0;
     private boolean connectDialogShown = false;
@@ -1836,19 +1838,29 @@ public class MainActivity extends Activity {
         desc.setGravity(Gravity.CENTER_HORIZONTAL);
         body.addView(desc, marginTop(8f));
 
-        final MiuixCard[] options = new MiuixCard[2];
-        final int[] selected = new int[]{connectOption};
+        // The ADB route is offered only once something has actually connected
+        // over it; without a live ADB transport the list stays exactly as it was.
+        final AdbManager.AdbStatus adbNow = AdbManager.query();
+        final boolean adbReady = adbNow != null && adbNow.isConnected();
+        final int cardCount = adbReady ? 3 : 2;
+        final MiuixCard[] options = new MiuixCard[cardCount];
+        final int[] selected = new int[]{connectOption < cardCount ? connectOption : 0};
         options[0] = optionCard(getString(R.string.opt_phone_title),
-                getString(R.string.opt_phone_desc), connectOption == 0, MiuixIcon.Shape.PHONE);
+                getString(R.string.opt_phone_desc), selected[0] == 0, MiuixIcon.Shape.PHONE);
         options[1] = optionCard(getString(R.string.opt_car_title),
-                getString(R.string.opt_car_desc), connectOption == 1, MiuixIcon.Shape.CAR);
+                getString(R.string.opt_car_desc), selected[0] == 1, MiuixIcon.Shape.CAR);
+        if (adbReady) {
+            options[2] = optionCard(getString(R.string.opt_adb_title),
+                    getString(R.string.opt_adb_desc), selected[0] == OPTION_ADB,
+                    MiuixIcon.Shape.WIFI);
+        }
 
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < cardCount; i++) {
             final int index = i;
             options[i].setOnClickListener(new View.OnClickListener() {
                 public void onClick(View v) {
                     selected[0] = index;
-                    for (int k = 0; k < 2; k++) {
+                    for (int k = 0; k < cardCount; k++) {
                         boolean on = k == index;
                         options[k].setBackground(MiuixTheme.outlined(
                                 on ? MiuixTheme.colors().primaryContainer
@@ -1864,7 +1876,8 @@ public class MainActivity extends Activity {
             body.addView(options[i], marginTop(12f));
         }
 
-        MiuixText tip = new MiuixText(this, getString(R.string.connect_tip),
+        MiuixText tip = new MiuixText(this,
+                getString(adbReady ? R.string.connect_tip_adb : R.string.connect_tip),
                 MiuixText.Role.MICRO, MiuixText.Tone.TERTIARY);
         tip.setSizeSp(12f).setWeight(400);
         tip.setSingleLine(false);
@@ -1879,13 +1892,51 @@ public class MainActivity extends Activity {
                 .setPositive(getString(R.string.connect_confirm),
                         new MiuixDialog.OnActionListener() {
                             public void onAction(MiuixDialog d) {
-                                connectOption = selected[0];
-                                linked = true;
                                 d.dismiss();
-                                onConnected();
+                                applyConnectOption(selected[0]);
                             }
                         })
                 .show();
+    }
+
+    /** Commit the chosen route; the ADB route also pulls the credentials in. */
+    private void applyConnectOption(final int option) {
+        connectOption = option;
+        linked = true;
+        if (option != OPTION_ADB) {
+            onConnected();
+            return;
+        }
+        toast(getString(R.string.adb_reading_creds));
+        new Thread(new Runnable() {
+            public void run() {
+                final AdbManager.ApCredentialResult res = AdbManager.readApCredentials();
+                ui.post(new Runnable() {
+                    public void run() {
+                        if (res != null && res.ok) {
+                            applyAdbCredentials(res);
+                        } else {
+                            toast(getString(R.string.adb_creds_failed,
+                                    res == null ? "" : res.detail));
+                        }
+                        onConnected();
+                    }
+                });
+            }
+        }, "adb-credentials").start();
+    }
+
+    /** Feed what ADB reported into the same credential model the UI renders. */
+    private void applyAdbCredentials(AdbManager.ApCredentialResult res) {
+        SoftApManager.ApConfig c = new SoftApManager.ApConfig();
+        c.ssid = res.ssid;
+        c.passphrase = res.passphrase;
+        c.security = res.open ? "nopass" : "WPA";
+        c.fromSystem = true;
+        if (c.isValid()) {
+            apConfig = c;
+            toast(getString(R.string.adb_creds_ok, res.ssid));
+        }
     }
 
     private MiuixCard optionCard(String title, String desc, boolean checked, MiuixIcon.Shape shape) {
