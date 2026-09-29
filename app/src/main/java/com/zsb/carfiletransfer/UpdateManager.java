@@ -1,11 +1,13 @@
 package com.zsb.carfiletransfer;
 
 import android.app.Activity;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
@@ -56,7 +58,18 @@ public final class UpdateManager {
 
     private static final String PREF = "carfile";
     private static final String KEY_SKIPPED = "update_skipped_version";
-    private static final String APK_NAME = "CarFileTransfer-update.apk";
+
+    /**
+     * The package is stored per version. One shared file name meant a half
+     * download of an older build could be resumed into a newer one: the result
+     * matched the new size and still started with "PK", but was a mix of two
+     * archives - which is what made the system installer fail with
+     * "解析软件包时出现问题".
+     */
+    private static final String APK_EXT = ".apk";
+    private static final String PART_EXT = ".part";
+    private static final String KEY_PARTIAL = "update_partial_id";
+    private static final String KEY_PENDING = "update_pending_path";
 
     /** Distinguish "slow answer" from "no answer at all". */
     private static final int CONNECT_TIMEOUT_MS = 10000;
@@ -487,11 +500,12 @@ public final class UpdateManager {
                 .show();
 
         final DownloadListener listener = new UiProgress(a, bar, stat);
-        final File out = new File(UpdateProvider.updateDir(a), APK_NAME);
+        final File out = targetFile(a, r);
+        final File part = partialFile(a, r);
 
         new Thread(new Runnable() {
             public void run() {
-                final DownloadResult res = downloadAny(a, r, out, listener);
+                final DownloadResult res = fetchPackage(a, r, out, part, listener);
                 ui.post(new Runnable() {
                     public void run() {
                         if (progress[0] != null) progress[0].dismiss();
@@ -504,6 +518,202 @@ public final class UpdateManager {
                 });
             }
         }, "update-download").start();
+    }
+
+    // ---------------------------------------------------------------- files
+
+    /** Version letters only - the name becomes a file and a content URI. */
+    private static String safeVersion(String v) {
+        String s = v == null ? "" : v.trim();
+        if (s.length() == 0) s = "latest";
+        return s.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    /** Final, installable package for one release. */
+    private static File targetFile(Context c, Release r) {
+        return new File(UpdateProvider.updateDir(c),
+                "CarFileTransfer-" + safeVersion(r.version) + APK_EXT);
+    }
+
+    /** Half-finished download; only promoted to the final name once verified. */
+    private static File partialFile(Context c, Release r) {
+        return new File(UpdateProvider.updateDir(c),
+                "CarFileTransfer-" + safeVersion(r.version) + APK_EXT + PART_EXT);
+    }
+
+    private static String partialId(Context c) {
+        return c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getString(KEY_PARTIAL, "");
+    }
+
+    private static void rememberPartial(Context c, String id) {
+        c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit().putString(KEY_PARTIAL, id).apply();
+    }
+
+    private static void clearPartial(Context c) {
+        c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit().remove(KEY_PARTIAL).apply();
+    }
+
+    /**
+     * Download, then make sure the result really is an installable package.
+     *
+     * <p>Handing a broken file to the installer is how "解析软件包时出现问题"
+     * reached the user, so nothing leaves this method without being parsed by
+     * {@link PackageManager} first. A first failure gets one clean retry with
+     * any half file discarded, because the usual causes - a partial left over
+     * from another release, or a server that answers 200 instead of honouring
+     * {@code Range} - are both fixed by starting over.</p>
+     */
+    private static DownloadResult fetchPackage(Context ctx, Release r, File out, File part,
+                                               DownloadListener l) {
+        DownloadResult res = downloadAny(ctx, r, part, l);
+        if (res.ok) res = verifyPackage(ctx, r, part, res, l);
+        if (res.ok) {
+            if (!promote(part, out)) {
+                res.ok = false;
+                res.fail = DlFail.STORAGE;
+                res.detail = out.getAbsolutePath();
+            } else {
+                sweep(ctx, out.getName());
+            }
+            return res;
+        }
+        // Retrying cannot conjure a network or more storage.
+        if (res.fail == DlFail.OFFLINE || res.fail == DlFail.STORAGE) return res;
+
+        clearPartial(ctx);
+        part.delete();
+        out.delete();
+        l.onPhase(ctx.getString(R.string.update_dl_retry, 1));
+        DownloadResult again = downloadAny(ctx, r, part, l);
+        if (again.ok) again = verifyPackage(ctx, r, part, again, l);
+        if (again.ok) {
+            if (!promote(part, out)) {
+                again.ok = false;
+                again.fail = DlFail.STORAGE;
+                again.detail = out.getAbsolutePath();
+            } else {
+                sweep(ctx, out.getName());
+            }
+        }
+        return again;
+    }
+
+    /** Move the verified partial to its final name. */
+    private static boolean promote(File part, File out) {
+        if (!part.exists()) return false;
+        if (out.exists() && !out.delete()) {
+            Log.w(TAG, "cannot replace " + out);
+        }
+        if (part.renameTo(out)) return true;
+        // Different mount points refuse rename; copy instead.
+        java.io.InputStream in = null;
+        java.io.OutputStream os = null;
+        try {
+            in = new java.io.FileInputStream(part);
+            os = new java.io.FileOutputStream(out);
+            byte[] buf = new byte[32768];
+            int n;
+            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            os.flush();
+            return out.length() == part.length();
+        } catch (Exception e) {
+            Log.w(TAG, "promote failed: " + e.getMessage());
+            return false;
+        } finally {
+            close(in);
+            close(os);
+        }
+    }
+
+    /** Drop packages left behind by earlier versions. */
+    private static void sweep(Context ctx, String keep) {
+        File dir = UpdateProvider.updateDir(ctx);
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isFile() && !keep.equals(f.getName())) {
+                f.delete();
+            }
+        }
+    }
+
+    /**
+     * Refuse anything the platform itself cannot parse.
+     *
+     * <p>Size and the "PK" magic catch a truncated or replaced body, but not a
+     * file assembled from two different builds - only a real parse does. The
+     * installer would otherwise reject it after the download looked finished.</p>
+     */
+    private static DownloadResult verifyPackage(Context ctx, Release r, File f,
+                                                DownloadResult res, DownloadListener l) {
+        l.onPhase(ctx.getString(R.string.update_dl_verify));
+        if (f == null || !f.exists() || f.length() <= 0) {
+            res.ok = false;
+            res.fail = DlFail.CORRUPT;
+            res.detail = "empty file";
+            return res;
+        }
+        long expected = r.apkSize;
+        if (expected > 0 && f.length() != expected) {
+            Log.w(TAG, "size mismatch: got " + f.length() + " expected " + expected);
+            res.ok = false;
+            res.fail = DlFail.CORRUPT;
+            res.detail = "size " + f.length() + " != " + expected;
+            return res;
+        }
+        if (!looksLikeZip(f)) {
+            // A captive portal or proxy answered with HTML instead.
+            Log.w(TAG, "downloaded file is not an APK");
+            res.ok = false;
+            res.fail = DlFail.CORRUPT;
+            res.detail = "not a zip/apk";
+            return res;
+        }
+        PackageInfo pi = parsePackage(ctx, f);
+        if (pi == null) {
+            Log.w(TAG, "package manager cannot parse " + f);
+            res.ok = false;
+            res.fail = DlFail.CORRUPT;
+            res.detail = "unparsable package";
+            return res;
+        }
+        if (pi.packageName == null || !ctx.getPackageName().equals(pi.packageName)) {
+            Log.w(TAG, "wrong package: " + pi.packageName);
+            res.ok = false;
+            res.fail = DlFail.CORRUPT;
+            res.detail = "package " + pi.packageName;
+            return res;
+        }
+        // Guard against a cached / renamed asset serving another build. The
+        // manifest version has no trailing ".0", so compare numerically.
+        if (!sameVersion(parts(r.version), parts(pi.versionName))) {
+            Log.w(TAG, "version mismatch: " + pi.versionName + " != " + r.version);
+            res.ok = false;
+            res.fail = DlFail.CORRUPT;
+            res.detail = "version " + pi.versionName;
+            return res;
+        }
+        return res;
+    }
+
+    private static boolean sameVersion(int[] a, int[] b) {
+        for (int i = 0; i < 3; i++) {
+            if (a[i] != b[i]) return false;
+        }
+        return true;
+    }
+
+    /** null when the file is not a readable package for this device. */
+    private static PackageInfo parsePackage(Context ctx, File f) {
+        try {
+            return ctx.getPackageManager().getPackageArchiveInfo(f.getAbsolutePath(), 0);
+        } catch (Throwable t) {
+            Log.w(TAG, "getPackageArchiveInfo threw: " + t.getMessage());
+            return null;
+        }
     }
 
     /** Live feedback from the download thread. */
@@ -582,12 +792,15 @@ public final class UpdateManager {
             res.detail = "no download source";
             return res;
         }
-        // A leftover file is only ever useful as a partial; anything at or past
-        // the expected size is a complete-but-untrusted file, so drop it.
+        // Resume identity: a half file belongs to one release served from one
+        // source. Anything else - an older build, a different asset, a file
+        // already at full size - is dropped, because resuming across builds
+        // silently builds a package that no parser accepts.
         long expected = r.apkSize;
-        if (out.exists() && (expected <= 0 || out.length() >= expected)) {
-            out.delete();
-        }
+        String identity = r.version + "|" + sources.get(0);
+        if (out.exists() && !identity.equals(partialId(ctx))) out.delete();
+        if (out.exists() && (expected <= 0 || out.length() >= expected)) out.delete();
+        rememberPartial(ctx, identity);
 
         DownloadResult last = null;
         for (String url : sources) {
@@ -673,6 +886,20 @@ public final class UpdateManager {
                 res.fail = DlFail.HTTP;
                 return res;
             }
+            if (start > 0) {
+                // Resuming is only valid when the server actually honours the
+                // Range request: a 200 (or a different offset) means it is
+                // sending the whole body, and appending that to the bytes
+                // already on disk would produce a corrupt package.
+                if (code != 206 || rangeStart(c.getHeaderField("Content-Range")) != start) {
+                    Log.w(TAG, "range not honoured (code " + code + "), restarting");
+                    close(fos);
+                    fos = null;
+                    out.delete();
+                    fos = new FileOutputStream(out, false);
+                    start = 0L;
+                }
+            }
 
             long total = 0L;
             String range = c.getHeaderField("Content-Range");
@@ -698,6 +925,13 @@ public final class UpdateManager {
                 fos.write(buf, 0, n);
                 written += n;
                 l.onProgress(written, shown);
+            }
+            // Flush to the filesystem before anything else reads the file: an
+            // installer that races a dirty page cache sees a short package.
+            try {
+                fos.flush();
+                fos.getFD().sync();
+            } catch (Exception ignored) {
             }
             close(fos);
             fos = null;
@@ -799,6 +1033,19 @@ public final class UpdateManager {
         }
     }
 
+    /** First byte of a "bytes=START-END/TOTAL" header, or -1 when absent. */
+    private static long rangeStart(String range) {
+        if (range == null) return -1L;
+        try {
+            int eq = range.indexOf('=');
+            int dash = range.indexOf('-');
+            if (eq < 0 || dash <= eq) return -1L;
+            return Long.parseLong(range.substring(eq + 1, dash).trim());
+        } catch (Exception e) {
+            return -1L;
+        }
+    }
+
     private static String hostOf(String url) {
         try {
             return new URL(url).getHost();
@@ -831,26 +1078,116 @@ public final class UpdateManager {
 
     private static void install(Activity a, File apk) {
         try {
+            if (apk == null || !apk.exists() || apk.length() <= 0) {
+                Toast.makeText(a, a.getString(R.string.update_failed), Toast.LENGTH_LONG).show();
+                return;
+            }
             if (Build.VERSION.SDK_INT >= 26
                     && !a.getPackageManager().canRequestPackageInstalls()) {
-                // the user has to allow "install unknown apps" for this source once
+                // the user has to allow "install unknown apps" for this source
+                // once; remember the package so the install resumes on return
+                // instead of being silently forgotten
+                rememberPending(a, apk.getAbsolutePath());
                 Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.parse("package:" + a.getPackageName()));
-                a.startActivity(i);
+                try {
+                    a.startActivity(i);
+                } catch (Exception e) {
+                    Log.w(TAG, "cannot open install settings: " + e.getMessage());
+                }
                 Toast.makeText(a, a.getString(R.string.update_allow_install),
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            Uri uri = UpdateProvider.uriFor(apk.getName());
-            Intent i = new Intent(Intent.ACTION_VIEW);
-            i.setDataAndType(uri, "application/vnd.android.package-archive");
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            a.startActivity(i);
+            launchInstaller(a, apk);
         } catch (Exception e) {
             Log.w(TAG, "install: " + e.getMessage());
             Toast.makeText(a, a.getString(R.string.update_failed), Toast.LENGTH_LONG).show();
         }
+    }
+
+    /**
+     * Hand the package to the system installer.
+     *
+     * <p>The read grant is attached to the intent, to the clip data and to every
+     * package that can handle it. Installers that only look at one of the three
+     * (MIUI's among them) otherwise open a URI they are not allowed to read and
+     * report a parse failure rather than a permission error.</p>
+     */
+    private static void launchInstaller(Context a, File apk) {
+        Uri uri = UpdateProvider.uriFor(apk.getName());
+        Intent i = new Intent(Intent.ACTION_VIEW);
+        i.setDataAndType(uri, "application/vnd.android.package-archive");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            i.setClipData(ClipData.newUri(a.getContentResolver(), "update", uri));
+        } catch (Exception ignored) {
+        }
+        try {
+            PackageManager pm = a.getPackageManager();
+            List<ResolveInfo> targets = pm.queryIntentActivities(i, 0);
+            if (targets != null) {
+                for (ResolveInfo ri : targets) {
+                    if (ri.activityInfo == null || ri.activityInfo.packageName == null) continue;
+                    a.grantUriPermission(ri.activityInfo.packageName, uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "grant failed: " + e.getMessage());
+        }
+        try {
+            if (a instanceof Activity) {
+                ((Activity) a).startActivity(i);
+            } else {
+                a.startActivity(i);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "no installer: " + e.getMessage());
+            Toast.makeText(a, a.getString(R.string.update_no_installer),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private static void rememberPending(Context c, String path) {
+        c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit().putString(KEY_PENDING, path).apply();
+    }
+
+    private static void clearPending(Context c) {
+        c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit().remove(KEY_PENDING).apply();
+    }
+
+    /**
+     * Finish an install that was interrupted by the "unknown sources" prompt.
+     * Called when the app comes back to the foreground.
+     */
+    public static void retryPendingInstall(Activity a) {
+        String path = a.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getString(KEY_PENDING, "");
+        if (path == null || path.length() == 0) return;
+        File f = new File(path);
+        if (!f.exists()) {
+            clearPending(a);
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 26
+                && !a.getPackageManager().canRequestPackageInstalls()) {
+            return;   // still not allowed - leave it for later
+        }
+        // re-check: an interrupted download must never reach the installer
+        PackageInfo pi = parsePackage(a, f);
+        if (pi == null || pi.packageName == null
+                || !a.getPackageName().equals(pi.packageName)) {
+            Log.w(TAG, "pending package no longer valid - discarding");
+            f.delete();
+            clearPending(a);
+            return;
+        }
+        clearPending(a);
+        launchInstaller(a, f);
     }
 
     private static void close(java.io.Closeable c) {

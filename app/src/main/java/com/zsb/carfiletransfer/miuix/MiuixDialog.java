@@ -1,5 +1,6 @@
 package com.zsb.carfiletransfer.miuix;
 
+import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Color;
@@ -30,7 +31,7 @@ public class MiuixDialog {
 
     public void dismiss() {
         try {
-            dialog.dismiss();
+            if (dialog != null) dialog.dismiss();
         } catch (Exception ignored) {
         }
     }
@@ -135,6 +136,11 @@ public class MiuixDialog {
 
         public MiuixDialog show() {
             final MiuixDialog[] ref = new MiuixDialog[1];
+            // A dialog attached to a dying activity is the classic
+            // BadTokenException source: never create one, just hand back an
+            // inert wrapper so callers can dismiss without crashing.
+            if (!hostUsable()) return new MiuixDialog(null);
+
             Dialog d = new Dialog(c);
             d.requestWindowFeature(Window.FEATURE_NO_TITLE);
             if (d.getWindow() != null) {
@@ -143,13 +149,30 @@ public class MiuixDialog {
             }
             d.setCancelable(cancelable);
 
+            android.util.DisplayMetrics dm = c.getResources().getDisplayMetrics();
+            int screen = dm.widthPixels;
+            float density = dm.density > 0 ? dm.density : 1f;
+            float screenWDp = screen / density;
+            float screenHDp = (dm.heightPixels > 0 ? dm.heightPixels : screen) / density;
+
+            // Compact phones cannot afford the design-spec padding - the action
+            // buttons end up squeezed until their labels are cut off.
+            float pad = paddingDp;
+            if (screenWDp <= 360f) pad = Math.min(pad, 18f);
+            else if (screenWDp < 480f) pad = Math.min(pad, 22f);
+
             MiuixCard card = new MiuixCard(c, radiusDp);
-            card.setContentPadding(paddingDp);
+            card.setContentPadding(pad);
             int width = MiuixTheme.dp(c, widthDp);
-            int screen = c.getResources().getDisplayMetrics().widthPixels;
             int max = (int) (screen * 0.86f);
             card.setLayoutParams(new ViewGroup.LayoutParams(Math.min(width, max),
                     ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            // Keep the card inside a short screen: the notes scroll inside a
+            // capped area instead of pushing the buttons off the bottom.
+            float maxMsg = maxMessageHeightDp;
+            float room = screenHDp * 0.42f;
+            if (room < maxMsg) maxMsg = Math.max(96f, room);
 
             if (title != null && title.length() > 0) {
                 MiuixText t = new MiuixText(c, title, MiuixText.Role.TITLE);
@@ -162,7 +185,7 @@ public class MiuixDialog {
                     // Long text (release notes) must never push the action row
                     // off screen - scroll inside a capped area instead.
                     MaxHeightScrollView sv =
-                            new MaxHeightScrollView(c, MiuixTheme.dp(c, maxMessageHeightDp));
+                            new MaxHeightScrollView(c, MiuixTheme.dp(c, maxMsg));
                     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -191,9 +214,10 @@ public class MiuixDialog {
             }
 
             if (positiveText != null || negativeText != null || neutralText != null) {
-                LinearLayout row = new LinearLayout(c);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setGravity(Gravity.END);
+                // Three actions in one row only fit on a wide screen. On a phone
+                // the last button used to be squeezed until its label was cut in
+                // half, so the row measures itself and stacks when it overflows.
+                ActionFlow row = new ActionFlow(c);
                 LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -203,11 +227,9 @@ public class MiuixDialog {
                 if (neutralText != null) {
                     MiuixButton neu = new MiuixButton(c, neutralText,
                             MiuixButton.Size.MEDIUM, MiuixButton.Color.NEUTRAL);
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    neu.setLayoutParams(new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT);
-                    lp.rightMargin = MiuixTheme.dp(c, 12f);
-                    neu.setLayoutParams(lp);
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
                     neu.setOnClickListener(new View.OnClickListener() {
                         public void onClick(View v) {
                             if (neutralListener != null && ref[0] != null) {
@@ -222,11 +244,9 @@ public class MiuixDialog {
                 if (negativeText != null) {
                     MiuixButton neg = new MiuixButton(c, negativeText,
                             MiuixButton.Size.MEDIUM, MiuixButton.Color.NEUTRAL);
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    neg.setLayoutParams(new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT);
-                    lp.rightMargin = MiuixTheme.dp(c, 12f);
-                    neg.setLayoutParams(lp);
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
                     neg.setOnClickListener(new View.OnClickListener() {
                         public void onClick(View v) {
                             if (negativeListener != null && ref[0] != null) {
@@ -241,6 +261,9 @@ public class MiuixDialog {
                 if (positiveText != null) {
                     MiuixButton pos = new MiuixButton(c, positiveText,
                             MiuixButton.Size.MEDIUM, MiuixButton.Color.PRIMARY);
+                    pos.setLayoutParams(new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
                     pos.setOnClickListener(new View.OnClickListener() {
                         public void onClick(View v) {
                             if (positiveListener != null && ref[0] != null) {
@@ -262,6 +285,75 @@ public class MiuixDialog {
             // late binding so listeners can dismiss the dialog themselves
             ref[0] = wrapper;
             return wrapper;
+        }
+
+        /** False once the host activity is gone, so no window token is used. */
+        private boolean hostUsable() {
+            if (!(c instanceof Activity)) return true;
+            Activity a = (Activity) c;
+            if (a.isFinishing()) return false;
+            if (android.os.Build.VERSION.SDK_INT >= 17 && a.isDestroyed()) return false;
+            return true;
+        }
+    }
+
+    /**
+     * The action row: stays horizontal while the buttons fit, otherwise stacks
+     * them full width so no label is ever clipped.
+     *
+     * <p>Buttons are measured at their natural width first; when the total is
+     * wider than the card, the row flips to a vertical layout and every button
+     * becomes full width. This is what keeps "立即更新" readable on a phone.</p>
+     */
+    private static final class ActionFlow extends LinearLayout {
+
+        private boolean stacked = false;
+        private boolean laidOut = false;
+
+        ActionFlow(Context c) {
+            super(c);
+            setOrientation(LinearLayout.HORIZONTAL);
+            setGravity(Gravity.END);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int avail = MeasureSpec.getSize(widthSpec);
+            if (avail > 0 && getChildCount() > 1) {
+                int need = 0;
+                int gap = MiuixTheme.dp(getContext(), 12f);
+                for (int i = 0; i < getChildCount(); i++) {
+                    View ch = getChildAt(i);
+                    LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams)
+                            ch.getLayoutParams();
+                    int childH = getChildMeasureSpec(heightSpec,
+                            getPaddingTop() + getPaddingBottom(), lp.height);
+                    ch.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), childH);
+                    need += ch.getMeasuredWidth();
+                }
+                boolean wantStack = need + gap * (getChildCount() - 1) > avail;
+                // margins have to be applied on the very first pass too, even
+                // when the row already starts in the right orientation
+                if (wantStack != stacked || !laidOut) {
+                    laidOut = true;
+                    stacked = wantStack;
+                    setOrientation(wantStack ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+                    for (int i = 0; i < getChildCount(); i++) {
+                        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams)
+                                getChildAt(i).getLayoutParams();
+                        if (wantStack) {
+                            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                            lp.rightMargin = 0;
+                            lp.topMargin = i == 0 ? 0 : MiuixTheme.dp(getContext(), 10f);
+                        } else {
+                            lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                            lp.rightMargin = i == getChildCount() - 1 ? 0 : gap;
+                            lp.topMargin = 0;
+                        }
+                    }
+                }
+            }
+            super.onMeasure(widthSpec, heightSpec);
         }
     }
 

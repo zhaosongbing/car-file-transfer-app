@@ -295,6 +295,10 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // installed first: anything that throws from here on is contained
+        // instead of closing the app the moment it opens
+        CrashGuard.install(this);
+
         // must run before setContentView: makes the layout draw behind the
         // system bars, and tells the window how to treat display cut-outs
         setupWindow();
@@ -387,6 +391,8 @@ public class MainActivity extends Activity {
         super.onResume();
         hotspotUp = softAp.isHotspotUp();
         refreshHome();
+        // an update interrupted by the "unknown sources" prompt resumes here
+        UpdateManager.retryPendingInstall(this);
         if (!updateChecked) {
             updateChecked = true;
             UpdateManager.check(this, false);
@@ -2681,27 +2687,42 @@ public class MainActivity extends Activity {
         public void run() {
             new Thread(new Runnable() {
                 public void run() {
-            final AdbManager.AdbStatus s = AdbManager.query();
-            final boolean ap = softAp.isHotspotUp();
-            // client detection runs on the worker thread - no permissions, no
-            // reflection: we parse /proc/net/arp for a reachable device on the
-            // AP subnet (phone joined our hotspot), or check whether the car
-            // itself joined an external Wi-Fi (phone's hotspot)
-            final boolean cc = softAp.hasConnectedClient();
-            final boolean ew = softAp.isOnExternalWifi();
-            final boolean seen = TransferService.wasClientSeenRecently(30000L);
+            // Every probe here touches /proc, /sys or system properties. Any of
+            // them can throw on an unfamiliar firmware; a probe must never be
+            // able to kill the poll loop (or the app).
+            AdbManager.AdbStatus s = null;
+            boolean ap = false, cc = false, ew = false, seen = false;
+            try {
+                s = AdbManager.query();
+                ap = softAp.isHotspotUp();
+                // client detection runs on the worker thread - no permissions, no
+                // reflection: we parse /proc/net/arp for a reachable device on the
+                // AP subnet (phone joined our hotspot), or check whether the car
+                // itself joined an external Wi-Fi (phone's hotspot)
+                cc = softAp.hasConnectedClient();
+                ew = softAp.isOnExternalWifi();
+                seen = TransferService.wasClientSeenRecently(30000L);
+            } catch (Throwable t) {
+                android.util.Log.w("MainActivity", "adb poll probe failed", t);
+            }
+            final AdbManager.AdbStatus fs = s;
+            final boolean fAp = ap, fCc = cc, fEw = ew, fSeen = seen;
             ui.post(new Runnable() {
                 public void run() {
-                    applyAdbStatus(s);
-                    clientConnected = cc || seen;
-                    externalWifi = ew;
-                    if (ap != hotspotUp) {
-                        hotspotUp = ap;
-                        SoftApManager.ApConfig live = softAp.liveConfig();
-                        if (live != null && live.isValid()) apConfig = live;
+                    try {
+                        applyAdbStatus(fs);
+                        clientConnected = fCc || fSeen;
+                        externalWifi = fEw;
+                        if (fAp != hotspotUp) {
+                            hotspotUp = fAp;
+                            SoftApManager.ApConfig live = softAp.liveConfig();
+                            if (live != null && live.isValid()) apConfig = live;
+                        }
+                        // single source of truth: derive + apply only on real change
+                        recomputeModule(true);
+                    } catch (Throwable t) {
+                        android.util.Log.w("MainActivity", "adb poll render failed", t);
                     }
-                    // single source of truth: derive + apply only on real change
-                    recomputeModule(true);
                 }
             });
                 }
@@ -2715,10 +2736,24 @@ public class MainActivity extends Activity {
         boolean on = s.isConnected();
         adbDot.setBackground(MiuixTheme.rounded(
                 on ? MiuixTheme.colors().success : MiuixTheme.colors().outline, dp(4f)));
-        adbText.setText(on ? getString(R.string.adb_connected, s.clients.get(0))
+        adbText.setText(on ? getString(R.string.adb_connected, adbPeerText(s))
                 : (s.listening ? getString(R.string.adb_listening)
                         : getString(R.string.adb_idle)));
         adbText.setTone(on ? MiuixText.Tone.PRIMARY : MiuixText.Tone.SECONDARY);
+    }
+
+    /**
+     * Which end answered.
+     *
+     * <p>A wired session has no peer socket to list, so {@code clients} stays
+     * empty while {@link AdbManager.AdbStatus#usbAdb} is true - reading element
+     * 0 there used to throw IndexOutOfBoundsException on the UI thread and
+     * killed the app right after start-up.</p>
+     */
+    private static String adbPeerText(AdbManager.AdbStatus s) {
+        if (!s.clients.isEmpty()) return s.clients.get(0);
+        if (s.usbAdb) return "USB";
+        return s.tcpPort > 0 ? ("TCP:" + s.tcpPort) : "";
     }
 
     // ---------------------------------------------------------------- infra
