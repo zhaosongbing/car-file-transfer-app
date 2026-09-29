@@ -12,17 +12,17 @@
 
 | 附件 | 用途 |
 | --- | --- |
-| `CarFileTransfer-v9.8.0.apk` | 规范名称，**推荐引用**（含版本号，便于区分与缓存） |
+| `CarFileTransfer-v9.8.1.apk` | 规范名称，**推荐引用**（含版本号，便于区分与缓存） |
 | `CarFileTransfer.apk` | 兼容别名，历史书签 / 二维码 / 外部脚本继续可用，不会被删除 |
 
-命名规则：`CarFileTransfer-<version>.apk`，其中 `<version>` 取 Release tag（如 `v9.8.0`）。
-各历史版本均已补齐，例如 v9.1.0 / v9.2.0 / … / v9.8.0。
+命名规则：`CarFileTransfer-<version>.apk`，其中 `<version>` 取 Release tag（如 `v9.8.1`）。
+各历史版本均已补齐，例如 v9.1.0 / v9.2.0 / … / v9.8.1。
 
 最新稳定版（两个链接指向同一个 APK）：
 
 ```
-https://github.com/zhaosongbing/car-file-transfer-app/releases/download/v9.8.0/CarFileTransfer-v9.8.0.apk
-https://github.com/zhaosongbing/car-file-transfer-app/releases/download/v9.8.0/CarFileTransfer.apk
+https://github.com/zhaosongbing/car-file-transfer-app/releases/download/v9.8.1/CarFileTransfer-v9.8.1.apk
+https://github.com/zhaosongbing/car-file-transfer-app/releases/download/v9.8.1/CarFileTransfer.apk
 ```
 
 应用内「关于 → 检测更新」读取的正是这些 Release 附件，因此该仓库必须保持**公开**（免鉴权即可读取）；
